@@ -44,14 +44,14 @@ export async function GET() {
     ollamaOk: health.ok,
     ollamaError: health.error,
     availableModels: health.models ?? [],
-    // Hide embed model from UI — it's auto-detected internally.
-    // We expose hasEmbedModel only as a boolean for the UI to show a hint
-    // if the user needs to install one.
-    hasEmbedModel: (health.models ?? []).some(m =>
+    // Available embed models — user can choose, with descriptions
+    availableEmbedModels: (health.models ?? []).filter(m =>
       m.startsWith('nomic-embed') ||
       m.startsWith('mxbai-embed') ||
       m.startsWith('bge-m3') ||
-      m.startsWith('snowflake-arctic-embed')
+      m.startsWith('snowflake-arctic-embed') ||
+      m.startsWith('bge-') ||
+      m.startsWith('e5-')
     ),
     vrmFiles,
     activeVrm,
@@ -75,7 +75,7 @@ export async function POST(req: NextRequest) {
     }
 
     // Avatar settings
-    if (typeof body.avatarMode === 'string' && ['2d', '3d'].includes(body.avatarMode)) {
+    if (typeof body.avatarMode === 'string' && ['live2d', '3d'].includes(body.avatarMode)) {
       await db.setting.upsert({
         where: { key: 'avatar_mode' },
         create: { key: 'avatar_mode', value: body.avatarMode },

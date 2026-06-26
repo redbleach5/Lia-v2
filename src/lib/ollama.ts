@@ -52,7 +52,7 @@ export async function getOllamaSettings() {
   return {
     baseUrl: currentBaseUrl,
     model: currentModel,
-    embedModel: currentEmbedModel,
+    embedModel: currentEmbedModel || 'auto',
   };
 }
 
@@ -78,12 +78,17 @@ export async function setOllamaSettings(params: {
     });
   }
   if (params.embedModel !== undefined) {
+    // Empty string means "auto" — clear the stored value so embed() will auto-detect
     currentEmbedModel = params.embedModel;
-    await db.setting.upsert({
-      where: { key: 'ollama_embed_model' },
-      create: { key: 'ollama_embed_model', value: currentEmbedModel },
-      update: { value: currentEmbedModel },
-    });
+    if (params.embedModel === '') {
+      await db.setting.delete({ where: { key: 'ollama_embed_model' } }).catch(() => null);
+    } else {
+      await db.setting.upsert({
+        where: { key: 'ollama_embed_model' },
+        create: { key: 'ollama_embed_model', value: currentEmbedModel },
+        update: { value: currentEmbedModel },
+      });
+    }
   }
 }
 
@@ -183,6 +188,7 @@ export async function embed(text: string): Promise<Float32Array> {
   await loadSettings();
 
   // Auto-detect embed model if the current one isn't in the available list
+  // OR if it's empty (user selected "auto" in UI)
   let modelToUse = currentEmbedModel;
   const health = await checkOllamaHealth();
   if (health.ok && health.models.length > 0) {
@@ -196,8 +202,20 @@ export async function embed(text: string): Promise<Float32Array> {
           currentEmbedModel = detected;
           await persistSetting('ollama_embed_model', detected).catch(() => null);
         }
+      } else if (!currentEmbedModel) {
+        // No embed model configured AND none detected — throw clear error
+        throw new Error(
+          'Не настроена модель для памяти. Скачай nomic-embed-text: ollama pull nomic-embed-text, ' +
+          'или выбери модель в Настройках → Модель → Модель для памяти.'
+        );
       }
     }
+  }
+
+  if (!modelToUse) {
+    throw new Error(
+      'Модель для памяти не выбрана. Открой Настройки → Модель и выбери embed-модель (или режим Авто).'
+    );
   }
 
   const res = await fetch(`${currentBaseUrl}/api/embed`, {

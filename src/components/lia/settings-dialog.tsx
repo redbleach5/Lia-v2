@@ -44,7 +44,7 @@ type Settings = {
   ollamaOk: boolean;
   ollamaError?: string;
   availableModels: string[];
-  hasEmbedModel: boolean;
+  availableEmbedModels: string[];
   vrmFiles: string[];
   activeVrm: string | null;
   avatarMode: string;
@@ -79,6 +79,7 @@ export function SettingsDialog() {
   // Form state
   const [baseUrl, setBaseUrl] = useState('');
   const [model, setModel] = useState('');
+  const [embedModel, setEmbedModel] = useState('auto');
   const [avatarMode, setAvatarMode] = useState<'live2d' | '3d'>('3d');
   const [activeVrm, setActiveVrm] = useState<string | null>(null);
 
@@ -97,6 +98,7 @@ export function SettingsDialog() {
       setRlStats(rlData);
       setBaseUrl(settingsData.baseUrl ?? '');
       setModel(settingsData.model ?? '');
+      setEmbedModel(settingsData.embedModel ?? 'auto');
       setAvatarMode(settingsData.avatarMode === 'live2d' ? 'live2d' : '3d');
       setActiveVrm(settingsData.activeVrm);
     } catch {
@@ -116,7 +118,12 @@ export function SettingsDialog() {
       const res = await fetch('/api/settings', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ baseUrl, model }),
+        body: JSON.stringify({
+          baseUrl,
+          model,
+          // 'auto' means: let the backend pick the best available embed model
+          embedModel: embedModel === 'auto' ? '' : embedModel,
+        }),
       });
       if (!res.ok) throw new Error('Save failed');
       toast.success('Настройки модели сохранены');
@@ -343,16 +350,86 @@ export function SettingsDialog() {
                 />
               </div>
 
-              {/* Подсказка про память */}
-              {!settings.hasEmbedModel && settings.ollamaOk && (
-                <div className="rounded border border-warning/40 bg-warning/5 p-2 text-[11px] text-warning flex items-start gap-2">
-                  <AlertCircle className="w-3.5 h-3.5 mt-0.5 shrink-0" />
-                  <span>
-                    Для долговременной памяти Лии нужна специальная модель (nomic-embed-text).
-                    Скачай её в программе Ollama, чтобы Лия запоминала ваши разговоры.
+              {/* Модель для памяти (embeddings) */}
+              <div className="space-y-1.5">
+                <Label className="text-xs">
+                  Модель для памяти
+                  <span className="text-text-dim font-normal ml-1.5">
+                    — запоминает смысл разговоров
                   </span>
-                </div>
-              )}
+                </Label>
+
+                {/* Опция Авто */}
+                <button
+                  onClick={() => setEmbedModel('auto')}
+                  className={cn(
+                    'w-full text-left text-xs px-2 py-1.5 rounded border transition-colors flex items-start gap-2',
+                    embedModel === 'auto'
+                      ? 'border-accent bg-accent/10 text-accent'
+                      : 'border-border hover:border-accent/50',
+                  )}
+                >
+                  <div className="flex-1">
+                    <div className="flex items-center justify-between gap-1">
+                      <span className="font-medium">Авто</span>
+                      {embedModel === 'auto' && <Check className="w-3 h-3 shrink-0" />}
+                    </div>
+                    <div className="text-[10px] text-text-dim mt-0.5">
+                      Лия сама выберет подходящую модель из доступных
+                    </div>
+                  </div>
+                </button>
+
+                {/* Список доступных embed-моделей */}
+                {settings.availableEmbedModels.length > 0 ? (
+                  <div className="space-y-1 max-h-40 overflow-y-auto">
+                    {settings.availableEmbedModels.map(m => (
+                      <button
+                        key={m}
+                        onClick={() => setEmbedModel(m)}
+                        className={cn(
+                          'w-full text-left text-xs px-2 py-1.5 rounded border transition-colors',
+                          embedModel === m
+                            ? 'border-accent bg-accent/10 text-accent'
+                            : 'border-border hover:border-accent/50',
+                        )}
+                      >
+                        <div className="flex items-center justify-between gap-1">
+                          <span className="truncate font-mono">{m}</span>
+                          {embedModel === m && <Check className="w-3 h-3 shrink-0" />}
+                        </div>
+                        <div className="text-[10px] text-text-dim mt-0.5">
+                          {describeEmbedModel(m)}
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="rounded border border-warning/40 bg-warning/5 p-2 text-[11px] text-warning flex items-start gap-2">
+                    <AlertCircle className="w-3.5 h-3.5 mt-0.5 shrink-0" />
+                    <span>
+                      Не найдено моделей для памяти. Скачай любую из них в Ollama:
+                      <code className="font-mono ml-1">nomic-embed-text</code>,
+                      <code className="font-mono ml-1">bge-m3</code>,
+                      <code className="font-mono ml-1">mxbai-embed-large</code>.
+                      Без этого Лия не сможет запоминать разговоры.
+                    </span>
+                  </div>
+                )}
+
+                {/* Ручной ввод (для нестандартных моделей) */}
+                <details className="mt-1">
+                  <summary className="text-[10px] text-text-dim cursor-pointer hover:text-foreground">
+                    Указать вручную
+                  </summary>
+                  <Input
+                    value={embedModel === 'auto' ? '' : embedModel}
+                    onChange={(e) => setEmbedModel(e.target.value || 'auto')}
+                    placeholder="например, bge-m3:latest"
+                    className="text-sm font-mono mt-1"
+                  />
+                </details>
+              </div>
 
               <Button onClick={saveModel} disabled={saving} className="w-full" size="sm">
                 {saving ? <Loader2 className="w-3 h-3 mr-1.5 animate-spin" /> : null}
@@ -638,4 +715,30 @@ export function SettingsDialog() {
       </DialogContent>
     </Dialog>
   );
+}
+
+// ============================================================================
+// Helper: describe an embed model by its name prefix
+// ============================================================================
+function describeEmbedModel(modelName: string): string {
+  const lower = modelName.toLowerCase();
+  if (lower.startsWith('nomic-embed-text')) {
+    return 'Быстрая и лёгкая. Хорошо для русского и английского. По умолчанию.';
+  }
+  if (lower.startsWith('bge-m3')) {
+    return 'Мультиязычная, поддерживает 100+ языков. Точнее nomic, но медленнее.';
+  }
+  if (lower.startsWith('bge-')) {
+    return 'Серия BGE — хорошие embedding-модели для разных языков.';
+  }
+  if (lower.startsWith('mxbai-embed-large')) {
+    return 'Высокое качество поиска. Точнее nomic, но требует больше памяти.';
+  }
+  if (lower.startsWith('snowflake-arctic-embed')) {
+    return 'Хорошо для поиска по коду и техническим текстам.';
+  }
+  if (lower.startsWith('e5-')) {
+    return 'Серия E5 от Microsoft. Мультиязычная, хорошего качества.';
+  }
+  return 'Embedding-модель — используется для запоминания смысла текстов.';
 }

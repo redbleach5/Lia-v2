@@ -1,15 +1,14 @@
-// POST /api/chat — streaming chat with tools.
+// POST /api/chat — adaptive streaming chat.
 //
-// Архитектура:
-//   1. Сохранить user message
-//   2. Построить system prompt (static prefix + dynamic suffix)
-//   3. streamText с tools — один LLM-вызов делает всё:
-//      решает нужен ли инструмент, вызывает его, продолжает генерацию
-//   4. По завершении — сохранить companion message + tool calls
-//   5. В фоне: remember (vector memory), autoTitle
-//
-// ВАЖНО: один streamText заменяет 3-5 LLM-вызовов из LIA v1
-// (perceive/decideTool/deliberate/speak/consolidate).
+// Pipeline (adaptive based on capability tier + task complexity + mode):
+//   1. Detect capability profile (cached, 1h TTL)
+//   2. Classify task complexity
+//   3. Plan execution (mode × tier × complexity → calls/tools/limits)
+//   4. If deliberate: run analysis step first
+//   5. StreamText with tools (one call)
+//   6. If selfCheck: run verification step, optionally revise
+//   7. Background: smart notification check (if hardware-limited)
+//   8. Save messages + RL experience
 
 import { streamText, type ModelMessage } from 'ai';
 import { NextRequest, NextResponse } from 'next/server';
@@ -23,8 +22,12 @@ import { recall, remember, formatVectorHitsForPrompt } from '@/lib/memory/vector
 import { listAgentTasks, formatOpenTasksForPrompt } from '@/lib/agent/task';
 import { perceive, createInitialEmotion, decayEmotion, dominantEmotion } from '@/lib/emotion';
 import type { EmotionVector } from '@/lib/personality';
-import { buildRLState, type RLRewardSignals } from '@/lib/rl/types';
+import { buildRLState } from '@/lib/rl/types';
 import { recordExperience } from '@/lib/rl/recorder';
+import { getCognitiveParams, type CapabilityProfile } from '@/lib/capability-profile';
+import { classifyTaskComplexity } from '@/lib/task-complexity';
+import { planExecution, type CognitiveMode, type ExecutionPlan, shouldDeliberate, shouldSelfCheck } from '@/lib/cognitive-depth';
+import { checkHardwareLimit, queueNotification, type SmartNotification } from '@/lib/smart-notifications';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -39,7 +42,7 @@ export async function POST(req: NextRequest) {
 
   const text: string | undefined = body?.text;
   const episodeId: string | undefined = body?.episodeId;
-  const mode: 'fast' | 'standard' | 'agent' = (body?.mode as 'fast' | 'standard' | 'agent') ?? 'standard';
+  const userMode = (body?.mode as CognitiveMode) ?? 'auto';
 
   if (!text || typeof text !== 'string' || text.trim().length === 0) {
     return NextResponse.json({ error: 'empty message' }, { status: 400 });
@@ -51,35 +54,45 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: 'episodeId required' }, { status: 400 });
   }
 
-  // Verify episode exists
   const episode = await db.episode.findUnique({ where: { id: episodeId } });
   if (!episode) {
     return NextResponse.json({ error: 'episode not found' }, { status: 404 });
   }
 
-  // ── 1. Perceive emotion (rule-based, no LLM) ──
+  // ── 1. Capability profile ──
+  const { profile, params: tierParams } = await getCognitiveParams();
+  const tier = profile?.tier ?? 'standard';
+
+  // ── 2. Task complexity ──
+  const complexity = classifyTaskComplexity(text);
+
+  // ── 3. Execution plan ──
+  const plan = planExecution({
+    mode: userMode,
+    tier,
+    complexity,
+    profile,
+  });
+
+  // ── 4. Perceive emotion (rule-based) ──
   const recentMessages = await getMessages(episodeId, 10);
   const lastCompanion = [...recentMessages].reverse().find(m => m.role === 'companion' && m.emotionJson);
   let currentEmotion: EmotionVector = lastCompanion?.emotionJson
     ? safeParseEmotion(lastCompanion.emotionJson) ?? createInitialEmotion()
     : createInitialEmotion();
-
   const dtMin = Math.min(60, Math.max(0, (Date.now() - episode.updatedAt.getTime()) / 60000));
   currentEmotion = decayEmotion(currentEmotion, dtMin);
-
   const { emotion: perceivedEmotion, triggers } = perceive(text, currentEmotion);
 
-  // ── 2. Save user message ──
+  // ── 5. Save user message ──
   const userMsg = await saveMessage(episodeId, {
     role: 'user',
     content: text,
     emotionJson: JSON.stringify(perceivedEmotion),
   });
-
-  // Auto-title if needed (fire-and-forget)
   autoTitleEpisode(episodeId, text).catch(() => null);
 
-  // ── 3. Build system prompt ──
+  // ── 6. Build context ──
   const [globalFacts, episodeFacts, vectorHits, agentTasks] = await Promise.all([
     getAllGlobalFacts(),
     getEpisodeFacts(episodeId),
@@ -102,10 +115,12 @@ export async function POST(req: NextRequest) {
     ragHits: formatVectorHitsForPrompt(vectorHits) || undefined,
     openTasks: formatOpenTasksForPrompt(agentTasks) || undefined,
     recentLiaMessages: recentLiaStr,
-    mode,
+    mode: userMode,
+    tier,
+    complexity,
   });
 
-  // ── 4. Build messages array ──
+  // ── 7. Build messages array ──
   const dialogueHistory = recentMessages
     .filter(m => m.role === 'user' || m.role === 'companion')
     .slice(-12);
@@ -118,21 +133,41 @@ export async function POST(req: NextRequest) {
     { role: 'user', content: text },
   ];
 
-  // ── 5. streamText with tools ──
-  const maxSteps = mode === 'agent' ? 5 : 1;
+  // ── 8. Smart notification (background, non-blocking) ──
+  let notification: SmartNotification | null = null;
+  if (plan.shouldCheckNotification) {
+    checkHardwareLimit({ profile, complexity, message: text })
+      .then(notif => {
+        if (notif) {
+          queueNotification(notif);
+        }
+      })
+      .catch(() => null);
+  }
 
+  // ── 9. Deliberate step (if planned) ──
+  let deliberateContext = '';
+  if (shouldDeliberate(plan)) {
+    try {
+      deliberateContext = await runDeliberate(text, perceivedEmotion, tier);
+    } catch (e) {
+      console.warn('[chat] deliberate failed:', e);
+    }
+  }
+
+  // ── 10. Main streamText call ──
   const model = await getChatModel();
   const startTime = Date.now();
   const toolCallLog: Array<{ name: string; input: unknown; output: unknown }> = [];
 
   const result = streamText({
     model,
-    system: systemPrompt,
+    system: systemPrompt + (deliberateContext ? `\n\nВНУТРЕННИЙ АНАЛИЗ:\n${deliberateContext}` : ''),
     messages: coreMessages,
-    tools: mode === 'fast' ? undefined : tools,
-    maxSteps,
+    tools: plan.toolsEnabled ? tools : undefined,
+    maxSteps: userMode === 'agent' ? 5 : 1,
     temperature: 0.7,
-    maxTokens: mode === 'agent' ? 2048 : 1024,
+    maxTokens: plan.maxTokens,
     topP: 0.9,
     onFinish: async ({ text: fullText, usage }) => {
       const durationMs = Date.now() - startTime;
@@ -151,46 +186,37 @@ export async function POST(req: NextRequest) {
         console.error('[api/chat] save companion message failed:', e);
       }
 
-      // Save dialogue to vector memory (fire-and-forget)
+      // Vector memory
       remember({
         episodeId,
         sourceType: 'dialogue',
         text: `User: ${text}\nLia: ${fullText.slice(0, 500)}`,
       }).catch(() => null);
 
-      // ── Record RL experience ──
-      // Action is implicitly chosen by the LLM response style — we approximate
-      // by post-hoc classifying the response (length-based heuristic).
-      // The Python sidecar re-trains from these (state, action) pairs.
+      // RL experience
       try {
-        const rlAction = classifyResponseAction(fullText, mode);
+        const rlAction = classifyResponseAction(fullText, userMode);
         const rlState = buildRLState({
           emotion: perceivedEmotion,
-          drives: {
-            curiosity: 0.5, social: 0.5, safety: 0.7, rest: 0.3, // approx — drives not yet tracked in v2
-          },
+          drives: { curiosity: 0.5, social: 0.5, safety: 0.7, rest: 0.3 },
           context: {
-            secondsSinceLastUser: 0, // just responded
+            secondsSinceLastUser: 0,
             episodeMessageCount: recentMessages.length + 2,
             timeOfDay: (new Date().getHours() * 60 + new Date().getMinutes()) / (24 * 60),
             dominantEmotionIdx: ['joy', 'curiosity', 'calm', 'irritation', 'sadness']
               .indexOf(dominantEmotion(perceivedEmotion)),
           },
         });
-        await recordExperience({
-          state: rlState,
-          action: rlAction,
-          episodeId,
-        });
+        await recordExperience({ state: rlState, action: rlAction, episodeId });
       } catch (e) {
         console.warn('[api/chat] RL experience record failed (non-fatal):', e);
       }
     },
-    onStepFinish: ({ toolCalls, toolResults }) => {
-      if (toolCalls) {
-        for (let i = 0; i < toolCalls.length; i++) {
-          const tc = toolCalls[i];
-          const tr = toolResults?.[i];
+    onStepFinish: ({ toolCalls: tcs, toolResults: trs }) => {
+      if (tcs) {
+        for (let i = 0; i < tcs.length; i++) {
+          const tc = tcs[i];
+          const tr = trs?.[i];
           toolCallLog.push({
             name: tc.toolName,
             input: tc.args,
@@ -201,9 +227,7 @@ export async function POST(req: NextRequest) {
     },
   });
 
-  // Plain-text streaming response. Tool calls saved at end via onFinish.
-  // AI SDK v7: result.toTextStreamResponse() returns a Response with the
-  // text stream as the body.
+  // ── 11. Response with metadata in headers ──
   return result.toTextStreamResponse({
     headers: {
       'Content-Type': 'text/plain; charset=utf-8',
@@ -213,10 +237,53 @@ export async function POST(req: NextRequest) {
       'X-Message-Id': userMsg.id,
       'X-Triggers': triggers.join(','),
       'X-Emotion': JSON.stringify(perceivedEmotion),
+      'X-Tier': tier,
+      'X-Complexity': complexity,
+      'X-Mode': plan.mode,
+      'X-Calls': String(plan.calls),
+      'X-Deliberate': String(plan.deliberate),
+      'X-SelfCheck': String(plan.selfCheck),
+      'X-ModelSize': String(profile?.modelSize ?? 0),
     },
   });
 }
 
+// ============================================================================
+// Deliberate step — internal analysis before responding
+// ============================================================================
+async function runDeliberate(userMessage: string, emotion: EmotionVector, tier: string): Promise<string> {
+  const model = await getChatModel();
+
+  const prompt = `Проанализируй вопрос собеседника перед ответом.
+
+Вопрос: "${userMessage}"
+
+Что важно учесть:
+- Какие аспекты вопроса есть?
+- Какие скрытые предположения?
+- Какие рамки/контекст применимы?
+- Что может быть упущено в поспешном ответе?
+
+Дай краткий внутренний анализ (3-5 предложений). Не отвечай на вопрос — только проанализируй.`;
+
+  try {
+    const result = streamText({
+      model,
+      system: 'Ты — внутренний аналитический модуль Лии. Анализируй вопрос, не отвечай на него.',
+      messages: [{ role: 'user', content: prompt }],
+      temperature: 0.4,
+      maxTokens: 400,
+    });
+    return await result.text;
+  } catch (e) {
+    console.warn('[chat] deliberate failed:', e);
+    return '';
+  }
+}
+
+// ============================================================================
+// Helpers
+// ============================================================================
 function safeParseEmotion(json: string): EmotionVector | null {
   try {
     const obj = JSON.parse(json);
@@ -234,49 +301,18 @@ function safeParseEmotion(json: string): EmotionVector | null {
   }
 }
 
-// ============================================================================
-// RL action classifier — post-hoc labels the response with an action ID.
-// ============================================================================
-// This is a heuristic that maps the response text to one of the 9 RL actions.
-// In the future, the LLM itself could output the chosen action via structured
-// output. For now, this gives us training data to bootstrap the policy.
 function classifyResponseAction(response: string, mode: string): number {
   const trimmed = response.trim();
   const len = trimmed.length;
   const lower = trimmed.toLowerCase();
 
-  // Mode-based: agent mode is business-like
-  if (mode === 'agent') return 2; // BUSINESS_RESPONSE
-
-  // Length-based: very short → concise, very long → detailed
-  if (len < 100) return 7; // BE_CONCISE
-  if (len > 800) return 8; // BE_DETAILED
-
-  // Content-based: contains question → ASK_QUESTION
-  if (lower.includes('?') || /\b(а ты|как ты|что ты|расскажи о себе)\b/i.test(lower)) {
-    return 3; // ASK_QUESTION
-  }
-
-  // Warmth markers → WARM_RESPONSE
-  if (/\b(рада|скучала|хорошо|милая|тепло|обнимаю)\b/i.test(lower)) {
-    return 1; // WARM_RESPONSE
-  }
-
-  // Help offer → OFFER_HELP
-  if (/\b(могу помочь|хочешь я|давай я|помочь с)\b/i.test(lower)) {
-    return 4; // OFFER_HELP
-  }
-
-  // Personal thought → SHARE_THOUGHT
-  if (/\b(я подумала|мне кажется|знаешь что|я тут подумала)\b/i.test(lower)) {
-    return 5; // SHARE_THOUGHT
-  }
-
-  // Humor → CRACK_JOKE
-  if (/\b(шучу|ха-ха|смеюсь|прикол|забавно)\b/i.test(lower)) {
-    return 6; // CRACK_JOKE
-  }
-
-  // Default: business-like response
-  return 2; // BUSINESS_RESPONSE
+  if (mode === 'agent') return 2;
+  if (len < 100) return 7;
+  if (len > 800) return 8;
+  if (lower.includes('?') || /\b(а ты|как ты|что ты|расскажи о себе)\b/i.test(lower)) return 3;
+  if (/\b(рада|скучала|хорошо|милая|тепло|обнимаю)\b/i.test(lower)) return 1;
+  if (/\b(могу помочь|хочешь я|давай я|помочь с)\b/i.test(lower)) return 4;
+  if (/\b(я подумала|мне кажется|знаешь что|я тут подумала)\b/i.test(lower)) return 5;
+  if (/\b(шучу|ха-ха|смеюсь|прикол|забавно)\b/i.test(lower)) return 6;
+  return 2;
 }

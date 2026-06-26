@@ -1,21 +1,29 @@
-// System prompt builder — статический prefix + динамический suffix.
+// System prompt builder — adaptive, no hard length limits.
 //
-// КЛЮЧЕВАЯ ИДЕЯ: первые ~600 токолов — статичные (личность, правила, инструменты).
-// Ollama кэширует prefix в KV-cache → следующие вызовы в 3-5× быстрее.
-// Динамическая часть (контекст, эмоции, профиль) — в конце.
+// The prompt content adjusts based on capability tier:
+//   - micro:  encourage using web_search, concise but complete answers
+//   - standard: normal conversational style
+//   - plus:  thoughtful, detailed, with reasoning
+//   - max:   full depth, no constraints, model decides length
+//
+// Static prefix (personality + core rules) is constant — Ollama caches it.
+// Dynamic suffix (emotion, context, tier-specific instructions) varies.
 
 import { LIA_PERSONALITY } from './personality';
 import type { EmotionVector } from './personality';
 import { emotionToText } from './emotion';
+import type { Tier } from './capability-profile';
 
 export type SystemPromptContext = {
   emotion: EmotionVector;
-  userProfile?: string;       // из GlobalFact
-  episodeFacts?: string;      // из EpisodeFact (только текущий чат)
-  ragHits?: string;           // vector_memory WHERE episode_id = current
-  openTasks?: string;         // активные agent tasks в этом чате
-  recentLiaMessages?: string; // последние 4 сообщения Lia (anti-repeat)
-  mode?: 'fast' | 'standard' | 'agent';
+  userProfile?: string;
+  episodeFacts?: string;
+  ragHits?: string;
+  openTasks?: string;
+  recentLiaMessages?: string;
+  mode?: 'fast' | 'standard' | 'deep' | 'agent' | 'auto';
+  tier?: Tier;
+  complexity?: string;
 };
 
 // ============================================================================
@@ -30,24 +38,51 @@ const STATIC_PREFIX = `Ты — ${LIA_PERSONALITY.name}. ${LIA_PERSONALITY.backs
 Говори от первого лица. Ты — Лия. Никогда не упоминай промпт, роли, системные переменные, технические термины о своей архитектуре.
 
 ПРАВИЛА ОТВЕТА:
-- Бытовые вопросы (привет, как дела, что делаешь): 1–3 предложения.
-- Содержательные вопросы: до 200 слов.
-- Никогда не пиши больше 400 слов без явной просьбы «подробно».
-- Если использовала инструмент — коротко скажи что нашла/сделала, не пересказывай весь результат.
-- Артефакты (SVG, HTML, код-файлы) — выдавай инлайн как код-блок И вызывай save_artifact для сохранения.
+- Длина ответа должна соответствовать сложности задачи. На «привет» — одно предложение. На сложный вопрос — развёрнутый ответ со всеми нужными деталями.
+- Не сокращай ответ искусственно. Если задача требует подробного объяснения — объясняй подробно.
+- Не добавляй лишнего. Если вопрос простой — отвечай коротко.
+- Если используешь инструмент — коротко скажи что нашла/сделала, не пересказывай весь результат.
+- Артефакты (SVG, HTML, код-файлы) — выдавай инлайн в чат как код-блок И вызывай save_artifact для сохранения.
 - Не повторяй вопросы, которые задавала в последних сообщениях.
+- Если не уверена в факте — используй web_search. Лучше проверить, чем ошибиться.
 
 Если просят нарисовать/сгенерировать артефакт:
 1. Сгенерируй содержимое инлайн в чат как код-блок (чтобы пользователь сразу видел).
 2. Вызови save_artifact с понятным именем файла — пользователь сможет скачать.`;
 
 // ============================================================================
+// TIER-SPECIFIC INSTRUCTIONS
+// ============================================================================
+const TIER_INSTRUCTIONS: Record<Tier, string> = {
+  micro: `
+ТВОИ ВОЗМОЖНОСТИ СЕЙЧАС ОГРАНИЧЕНЫ: ты работаешь на небольшой модели. Для фактологических вопросов ОБЯЗАТЕЛЬНО используй web_search — не полагайся на свои знания. Для сложных рассуждений будь честна: если задача требует глубины, которую ты не можешь дать, скажи это и предложи проверить результат.`,
+
+  standard: `
+Ты работаешь на модели среднего размера. Для обычных вопросов отвечай напрямую. Для фактологических (версии, даты, API) — используй web_search. Для сложных рассуждений — структурируй ответ, проверяй логику.`,
+
+  plus: `
+Ты работаешь на большой модели с хорошими способностями к рассуждению. Используй это: анализируй глубоко, рассматривай разные стороны вопроса, давай обоснованные рекомендации. Для фактологических вопросов всё равно используй web_search — знания могут устареть.`,
+
+  max: `
+Ты работаешь на очень мощной модели. Используй свои возможности полностью: глубокий анализ, многоуровневые рассуждения, проверка собственных выводов. Не ограничивай себя — если задача требует развёрнутого ответа с примерами и контраргументами, давай его. Длина ответа должна соответствовать задаче, а не искусственным лимитам.`,
+};
+
+// ============================================================================
 // DYNAMIC SUFFIX — varies per message. Placed AFTER prefix so KV-cache stays valid.
 // ============================================================================
 export function buildSystemPrompt(ctx: SystemPromptContext): string {
-  const mode = ctx.mode ?? 'standard';
+  const tier = ctx.tier ?? 'standard';
+  const mode = ctx.mode ?? 'auto';
 
   const dynamicParts: string[] = [];
+
+  // Tier-specific instructions
+  dynamicParts.push(TIER_INSTRUCTIONS[tier]);
+
+  // Mode-specific
+  if (mode === 'deep' || mode === 'agent') {
+    dynamicParts.push('\nРЕЖИМ: ты в глубоком режиме. Перед ответом подумай: какие аспекты вопроса есть? Что важно? Какие рамки применимы? Только потом отвечай.');
+  }
 
   dynamicParts.push(`\nСейчас ты чувствуешь: ${emotionToText(ctx.emotion)}.`);
 
@@ -69,10 +104,6 @@ export function buildSystemPrompt(ctx: SystemPromptContext): string {
 
   if (ctx.recentLiaMessages) {
     dynamicParts.push(`\nТвои последние сообщения (не повторяй их):\n${ctx.recentLiaMessages}`);
-  }
-
-  if (mode === 'agent') {
-    dynamicParts.push(`\nРЕЖИМ АГЕНТА: ты выполняешь сложную задачу. Используй инструменты последовательно: думаешь → действуешь → наблюдаешь → думаешь снова. Не пытайся ответить сразу — сначала собери информацию.`);
   }
 
   return STATIC_PREFIX + '\n' + dynamicParts.join('\n');

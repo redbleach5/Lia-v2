@@ -4,6 +4,7 @@ import { useChatStore } from '@/stores/chat-store';
 import { useChat } from '@/hooks/use-chat';
 import { ChatMessage } from '@/components/lia/chat-message';
 import { ChatInput } from '@/components/lia/chat-input';
+import { SmartNotificationBanner } from '@/components/lia/smart-notification-banner';
 import { useEffect, useRef } from 'react';
 import { EmptyState } from '@/components/lia/empty-state';
 
@@ -39,6 +40,9 @@ export function ChatPanel() {
           )}
         </div>
       </div>
+
+      {/* Smart notifications (non-blocking, dismissible) */}
+      <SmartNotificationBanner />
 
       {/* Messages */}
       <div

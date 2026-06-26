@@ -4,7 +4,7 @@ import { useState, useRef, useEffect } from 'react';
 import type { ChatMode } from '@/stores/chat-store';
 import { useChatStore } from '@/stores/chat-store';
 import { cn } from '@/lib/utils';
-import { Send, StopCircle, ChevronDown, Zap, Brain, Rocket } from 'lucide-react';
+import { Send, StopCircle, ChevronDown, Zap, Brain, Rocket, Sparkles } from 'lucide-react';
 
 type ChatInputProps = {
   onSend: (text: string, mode: ChatMode) => void;
@@ -14,9 +14,11 @@ type ChatInputProps = {
 };
 
 const MODES: Array<{ id: ChatMode; label: string; icon: typeof Zap; description: string; color: string }> = [
-  { id: 'fast', label: 'Быстрый', icon: Zap, description: '1 LLM-вызов, без инструментов. Для бытовых вопросов.', color: 'text-amber-500' },
-  { id: 'standard', label: 'Стандарт', icon: Brain, description: '1 LLM-вызов + инструменты. По умолчанию.', color: 'text-accent' },
-  { id: 'agent', label: 'Агент', icon: Rocket, description: 'Многошаговый режим с tool chaining. Скоро: полноценный runner.', color: 'text-rose-500' },
+  { id: 'auto',     label: 'Авто',     icon: Sparkles, description: 'Лия сама выбирает глубину под задачу и железо. Рекомендуется.', color: 'text-accent' },
+  { id: 'fast',     label: 'Быстрый',  icon: Zap,      description: '1 вызов, без инструментов. Для «привет» и бытовых вопросов.', color: 'text-amber-500' },
+  { id: 'standard', label: 'Стандарт', icon: Brain,    description: '1 вызов + инструменты + self-check. Для обычных вопросов.', color: 'text-sky-500' },
+  { id: 'deep',     label: 'Глубокий', icon: Brain,    description: 'Анализ → ответ → проверка. Для сложных задач.', color: 'text-violet-500' },
+  { id: 'agent',    label: 'Агент',    icon: Rocket,   description: 'Многошаговый режим с инструментами. Для больших задач.', color: 'text-rose-500' },
 ];
 
 export function ChatInput({ onSend, isStreaming, onStop, disabled }: ChatInputProps) {

@@ -53,7 +53,7 @@ export type AgentPlanLive = {
   complexity: string;
 };
 
-export type ChatMode = 'fast' | 'standard' | 'agent';
+export type ChatMode = 'auto' | 'fast' | 'standard' | 'deep' | 'agent';
 
 // ============================================================================
 // Store
@@ -142,7 +142,7 @@ export const useChatStore = create<ChatStore>((set) => ({
   messages: [],
   emotion: initialEmotion,
   isStreaming: false,
-  mode: 'standard',
+  mode: 'auto',
   agentTasks: [],
   activeTaskId: null,
   activeTaskStatus: null,

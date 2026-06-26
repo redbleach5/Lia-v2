@@ -18,7 +18,7 @@ export function useChat() {
   const store = useChatStore();
   const abortRef = useRef<AbortController | null>(null);
 
-  const sendMessage = useCallback(async (text: string, mode: ChatMode = 'standard') => {
+  const sendMessage = useCallback(async (text: string, mode: ChatMode = 'auto') => {
     const episodeId = store.currentEpisodeId;
     if (!episodeId) {
       toast.error('Нет активного чата. Создай новый.');

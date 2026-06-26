@@ -4,6 +4,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { listAgentTasks, createAgentTask, type AgentTaskStatus } from '@/lib/agent/task';
 import { runAgentTask } from '@/lib/agent/runner';
+import { getCognitiveParams } from '@/lib/capability-profile';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -43,13 +44,21 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: 'goal required' }, { status: 400 });
     }
 
+    // Get capability profile to set adaptive agent limits
+    const { params: tierParams } = await getCognitiveParams();
+
     const task = await createAgentTask({
       episodeId,
       goal: goal.trim(),
       toolsWhitelist: Array.isArray(toolsWhitelist) ? toolsWhitelist : null,
       fsScope: typeof fsScope === 'string' ? fsScope : null,
-      maxSteps: typeof maxSteps === 'number' ? Math.min(50, Math.max(1, maxSteps)) : undefined,
-      maxDurationSec: typeof maxDurationSec === 'number' ? Math.min(3600, Math.max(60, maxDurationSec)) : undefined,
+      // Use tier-adaptive limits if not explicitly provided
+      maxSteps: typeof maxSteps === 'number'
+        ? Math.min(tierParams.agentMaxSteps, Math.max(1, maxSteps))
+        : tierParams.agentMaxSteps,
+      maxDurationSec: typeof maxDurationSec === 'number'
+        ? Math.min(tierParams.agentMaxDurationSec, Math.max(60, maxDurationSec))
+        : tierParams.agentMaxDurationSec,
     });
 
     // Auto-start the runner unless caller opted out

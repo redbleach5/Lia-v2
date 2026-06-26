@@ -5,6 +5,7 @@ import { EmotionBars } from './avatar-svg';
 import { Live2DAvatar } from './live2d-avatar';
 import { AgentPanel } from './agent-panel';
 import { RLPanel } from './rl-panel';
+import { CapabilityIndicator } from './capability-indicator';
 import { Sparkles } from 'lucide-react';
 import { useState, useEffect, type ReactNode } from 'react';
 import dynamic from 'next/dynamic';
@@ -62,6 +63,9 @@ export function AvatarColumn() {
 
         {/* RL — обучаемая личность */}
         <RLPanel />
+
+        {/* Capability — текущий tier */}
+        <CapabilityIndicator />
       </div>
     </aside>
   );

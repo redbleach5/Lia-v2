@@ -1,0 +1,208 @@
+// Lia v2 — Prisma schema
+// SQLite + sqlite-vec (loaded separately via better-sqlite3)
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ============================================================================
+// Episodes — каждый чат = отдельный эпизод
+// ============================================================================
+model Episode {
+  id        String   @id @default(cuid())
+  title     String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  endedAt   DateTime?
+  summary   String?
+
+  messages       Message[]
+  episodeFacts   EpisodeFact[]
+  vectorMemories VectorMemory[]
+  agentTasks     AgentTask[]
+}
+
+// ============================================================================
+// Messages — все роли в одной таблице (user / companion / tool / system)
+// ============================================================================
+model Message {
+  id          String   @id @default(cuid())
+  episodeId   String
+  episode     Episode @relation(fields: [episodeId], references: [id], onDelete: Cascade)
+
+  // 'user' | 'companion' | 'tool' | 'system'
+  role String
+
+  content String
+
+  // JSON: EmotionVector snapshot at the moment of this message
+  emotionJson String?
+
+  // JSON: [{ name, input, output, success }] — tool calls made during this message
+  toolCallsJson String?
+
+  // LLM usage stats
+  tokensIn   Int?
+  tokensOut  Int?
+  durationMs Int?
+
+  createdAt DateTime @default(now())
+
+  @@index([episodeId])
+  @@index([createdAt])
+}
+
+// ============================================================================
+// Global facts — профиль пользователя, переживает смену чата
+// ============================================================================
+// Только то, что пользователь сам сообщил и что относится ко всем чатам:
+// имя, профессия, любимый язык, часовой пояс и т.п.
+//
+// ВАЖНО: ключи с префиксом "user." — про пользователя, "lia." — про саму Лию.
+// Внутри чатов эти факты не пишутся — для контекстных фактов есть EpisodeFact.
+model GlobalFact {
+  key       String   @id
+  value     String
+  confidence Float   @default(0.6)
+  hitCount  Int      @default(0)
+  updatedAt DateTime @updatedAt
+}
+
+// ============================================================================
+// Episode facts — контекстные факты, привязанные к конкретному чату
+// ============================================================================
+// Примеры: "текущий проект — Lia v2", "пользователь просит проанализировать X",
+// "упоминали библиотеку Drizzle". При закрытии чата эти факты исчезают.
+model EpisodeFact {
+  id        String   @id @default(cuid())
+  episodeId String
+  episode   Episode @relation(fields: [episodeId], references: [id], onDelete: Cascade)
+
+  key       String
+  value     String
+
+  ts DateTime @default(now())
+
+  @@unique([episodeId, key])
+  @@index([episodeId])
+}
+
+// ============================================================================
+// Vector memory — семантический поиск по контексту чата
+// ============================================================================
+// ВСЕГДА привязана к episodeId. Утечек между чатами нет архитектурно.
+//
+// Embedding — 768-dim float32 (nomic-embed-text).
+// Хранится как BLOB; для поиска используется sqlite-vec extension,
+// загружаемое через better-sqlite3 (не через Prisma).
+model VectorMemory {
+  id         String   @id @default(cuid())
+  episodeId  String
+  episode    Episode @relation(fields: [episodeId], references: [id], onDelete: Cascade)
+
+  // 'dialogue' | 'summary' | 'fact'
+  sourceType String
+
+  text       String
+
+  // 768-dim float32 packed as Buffer
+  embedding  Bytes
+
+  ts DateTime @default(now())
+
+  @@index([episodeId])
+  @@index([sourceType])
+}
+
+// ============================================================================
+// Agent tasks — долгоживущие задачи с checkpointing
+// ============================================================================
+model AgentTask {
+  id        String   @id @default(cuid())
+  episodeId String
+  episode   Episode @relation(fields: [episodeId], references: [id], onDelete: Cascade)
+
+  // Исходная задача пользователя
+  goal String
+
+  // 'pending' | 'planning' | 'executing' | 'waiting_input' | 'waiting_confirmation'
+  // | 'synthesizing' | 'done' | 'failed' | 'cancelled'
+  status String @default("pending")
+
+  // JSON: { goal, steps: string[], needsTools, complexity }
+  planJson String?
+
+  currentStep Int @default(0)
+
+  // JSON: [{ thought, action, input, observation, ts, durationMs, tokensUsed }]
+  stepsJson String @default("[]")
+
+  // Lifecycle timestamps
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  startedAt    DateTime?
+  completedAt  DateTime?
+
+  // Error message if failed
+  error String?
+
+  // Limits
+  maxSteps       Int @default(15)
+  maxDurationSec Int @default(600)
+
+  // JSON array of tool names; null = all tools allowed
+  toolsWhitelist String?
+
+  // Filesystem scope — path prefix for fs operations; null = no fs
+  fsScope String?
+
+  // JSON: serialized state for resume after restart
+  checkpointJson String?
+
+  // Final result
+  resultSummary String?
+
+  // JSON: [{ kind, path, meta }] — saved files / screenshots / plots
+  artifactsJson String @default("[]")
+
+  @@index([episodeId])
+  @@index([status])
+}
+
+model AgentArtifact {
+  id        String   @id @default(cuid())
+  taskId    String
+  step      Int
+  kind      String // 'file' | 'screenshot' | 'log' | 'plot'
+  path      String
+  metaJson  String @default("{}")
+  createdAt DateTime @default(now())
+
+  @@index([taskId])
+}
+
+// ============================================================================
+// RL model versions — для обучаемой личности (фаза 6)
+// ============================================================================
+// В MVP не используется, но таблица создаётся, чтобы потом не мигрировать.
+model RlModelVersion {
+  version       Int      @id
+  createdAt     DateTime @default(now())
+  onnxPath      String
+  metricsJson   String
+  parentVersion Int?
+  active        Boolean  @default(false)
+}
+
+// ============================================================================
+// Settings — key/value for runtime config (ollama url, model, etc.)
+// ============================================================================
+model Setting {
+  key   String @id
+  value String
+}

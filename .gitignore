@@ -1,0 +1,62 @@
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+.yarn/install-state.gz
+
+# Testing
+coverage/
+
+# Next.js
+.next/
+out/
+build/
+dist/
+
+# Production
+*.tsbuildinfo
+next-env.d.ts
+
+# Runtime data
+db/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Logs
+dev.log
+server.log
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Env files
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Sandbox / dev tooling — NOT part of Lia
+.zscripts/
+tool-results/
+skills/
+mini-services/
+examples/
+Caddyfile
+
+# VRM model — large binary, download via scripts/download-vrm.sh
+public/models/*.vrm
+
+# Generated artifacts (user-uploaded / Lia-generated)
+download/lia-artifacts/
+
+# Misc
+.DS_Store
+*.pem
+.idea/
+.vscode/
+*.swp
+*.swo

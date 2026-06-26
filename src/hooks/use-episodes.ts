@@ -87,24 +87,33 @@ export function useEpisodes() {
     }
   }, [removeEpisodeFromStore, select, create]);
 
-  // On mount ONLY: refresh list, create first episode if empty.
-  // Stable callbacks (setEpisodes etc) — these don't change after mount.
+  // On mount ONLY: ensure default episode exists (atomic on server),
+  // then select it. Guard against double-call from HMR/Strict Mode.
+  const initRef = useRef(false);
   useEffect(() => {
-    let cancelled = false;
+    if (initRef.current) return;
+    initRef.current = true;
+
     (async () => {
-      await refresh();
-      if (cancelled) return;
-      const current = useChatStore.getState();
-      if (current.episodes.length === 0) {
-        const ep = await create();
-        if (cancelled) return;
-        if (ep) await select(ep.id);
-      } else if (!current.currentEpisodeId) {
-        await select(current.episodes[0].id);
+      try {
+        // Atomic: server creates one episode only if DB is empty.
+        // No race condition possible — even if this effect runs twice,
+        // the second call sees count > 0 and doesn't create another.
+        const res = await fetch('/api/episodes/ensure-default', { method: 'POST' });
+        if (!res.ok) return;
+        const data = await res.json();
+        const episodes = (data.episodes ?? []) as Episode[];
+        setEpisodes(episodes);
+
+        // Select first episode if we don't have one selected
+        if (episodes.length > 0 && !useChatStore.getState().currentEpisodeId) {
+          await select(episodes[0].id);
+        }
+      } catch (e) {
+        console.error('[useEpisodes] init failed:', e);
       }
     })();
-    return () => { cancelled = true; };
-  }, []);
+  }, [setEpisodes, select]);
 
   return { refresh, create, select, remove };
 }

@@ -1,37 +1,73 @@
-# Lia RL Sidecar
+# Lia RL Sidecar (Движок обучения)
 
-Python-сервис для обучения RL-политики личности Лии. Запускается как отдельный
-процесс рядом с Next.js. Сама inference в production идёт через ONNX в Next.js
+Python-сервис для обучения стиля общения Лии. Запускается как отдельный процесс
+рядом с Next.js. Inference в production идёт через ONNX в Next.js
 (через `onnxruntime-node`) — sidecar нужен только для обучения.
 
 ## Установка
 
+### 1. Создать виртуальное окружение
+
 ```bash
 cd python-sidecar
-python -m venv .venv
-source .venv/bin/activate  # Linux/macOS
+python3 -m venv .venv
+source .venv/bin/activate    # Linux/macOS
 # или: .venv\Scripts\activate  # Windows
+```
+
+### 2. Установить зависимости
+
+```bash
 pip install -r requirements.txt
 ```
 
+Зависимости:
+- **fastapi + uvicorn** — HTTP сервер (порт 8765)
+- **torch** — PyTorch для обучения (PPO)
+- **onnx** — экспорт обученной модели в формат ONNX
+- **onnxscript** — требуется PyTorch 2.x для `torch.onnx.export`
+- **numpy** — тензоры для обучения
+- **pydantic** — валидация запросов/ответов
+
+Размер: ~750 МБ (большая часть — PyTorch).
+
+### 3. Проверить установку
+
+```bash
+python -c "import uvicorn, torch, fastapi, onnx, onnxscript; print('OK')"
+```
+
+Должно вывести `OK`.
+
 ## Запуск
+
+### Через терминал
 
 ```bash
 cd python-sidecar
+source .venv/bin/activate
 python main.py
 # или: uvicorn main:app --host 127.0.0.1 --port 8765
 ```
 
-Сервер слушает на `http://127.0.0.1:8765`.
+### Через UI
+
+В приложении: **Настройки → Обучение → Запустить**.
+
+UI вызовет `POST /api/rl/start-engine`, который:
+1. Найдёт Python (python3 → python)
+2. Предпочтёт `.venv` если существует
+3. Проверит что установлены `uvicorn, torch, fastapi`
+4. Запустит процесс с передачей `DATABASE_URL`
 
 ## API
 
 | Endpoint | Method | Описание |
 |---|---|---|
 | `/health` | GET | Health check |
-| `/stats` | GET | Кол-во transitions + список моделей |
-| `/models` | GET | Список сохранённых версий политик |
-| `/train` | POST | Запустить обучение (блокирующий, ~30 сек) |
+| `/stats` | GET | Кол-во transitions + список версий |
+| `/models` | GET | Список сохранённых версий |
+| `/train` | POST | Запустить обучение (блокирующий, ~5-30 сек) |
 | `/predict` | POST | Inference для дебага (production использует ONNX в Next.js) |
 
 ### Train
@@ -99,3 +135,4 @@ python-sidecar/
 - Stable Baselines3 для серьёзных экспериментов (если захочется сложнее PPO)
 - Real sentiment model (rubert-tiny) вместо rule-based
 - Curriculum learning — обучать на свежих transitions больше, чем на старых
+

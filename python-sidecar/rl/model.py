@@ -164,6 +164,10 @@ def export_to_onnx(model: LiaPolicyNetwork, onnx_path: str) -> None:
     # Create a dummy input for tracing
     dummy_input = torch.zeros(1, model.state_dim, dtype=torch.float32)
 
+    # PyTorch 2.x by default splits weights > 1KB into external .onnx.data file.
+    # onnxruntime-node can't load external data from a buffer (only from file path).
+    # We force all weights into the single .onnx file by using the legacy exporter
+    # (dynamo=False) which doesn't use external data.
     torch.onnx.export(
         model,
         dummy_input,
@@ -176,4 +180,5 @@ def export_to_onnx(model: LiaPolicyNetwork, onnx_path: str) -> None:
             "state_value": {0: "batch"},
         },
         opset_version=17,
+        dynamo=False,  # use legacy exporter — embeds weights in single file
     )

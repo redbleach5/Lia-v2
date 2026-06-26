@@ -12,7 +12,9 @@ torch==2.5.1
 numpy==2.2.1
 
 # ONNX export (for inference in Next.js via onnxruntime-node)
+# onnxscript is required by torch.onnx.export in PyTorch 2.x
 onnx==1.17.0
+onnxscript==0.1.0b1
 
 # SQLite (read RLExperience table from the same DB as Next.js)
 # Note: sqlite3 is in Python stdlib, no extra dep needed

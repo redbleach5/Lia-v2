@@ -46,11 +46,19 @@ export function EpisodesSidebar() {
                   {group.label}
                 </div>
                 {group.items.map(ep => (
-                  <button
+                  <div
                     key={ep.id}
                     onClick={() => select(ep.id)}
+                    role="button"
+                    tabIndex={0}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter' || e.key === ' ') {
+                        e.preventDefault();
+                        select(ep.id);
+                      }
+                    }}
                     className={cn(
-                      'group w-full text-left px-3 py-2 mx-1 rounded-md flex items-center gap-2 transition-colors',
+                      'group w-full text-left px-3 py-2 mx-1 rounded-md flex items-center gap-2 transition-colors cursor-pointer',
                       'hover:bg-surface-2',
                       currentId === ep.id && 'bg-accent/10',
                     )}
@@ -79,7 +87,7 @@ export function EpisodesSidebar() {
                     >
                       <Trash2 className="w-3 h-3" />
                     </button>
-                  </button>
+                  </div>
                 ))}
               </div>
             ))}

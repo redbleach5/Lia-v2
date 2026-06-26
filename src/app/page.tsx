@@ -7,6 +7,7 @@ import { EpisodesSidebar } from '@/components/lia/episodes-sidebar';
 import { ChatPanel } from '@/components/lia/chat-panel';
 import { AvatarColumn } from '@/components/lia/avatar-column';
 import { OllamaBanner } from '@/components/lia/ollama-banner';
+import { SettingsDialog } from '@/components/lia/settings-dialog';
 
 export default function HomePage() {
   useEpisodes();
@@ -24,14 +25,7 @@ export default function HomePage() {
           <span className="text-[10px] text-text-dim font-mono">v2.0</span>
         </div>
         <div className="flex-1" />
-        <a
-          href="https://github.com/redbleach5/LIA"
-          target="_blank"
-          rel="noreferrer noopener"
-          className="text-[11px] text-muted-foreground hover:text-foreground transition-colors"
-        >
-          GitHub
-        </a>
+        <SettingsDialog />
       </header>
 
       {/* Ollama connection banner */}

@@ -11,7 +11,7 @@
 // ВАЖНО: один streamText заменяет 3-5 LLM-вызовов из LIA v1
 // (perceive/decideTool/deliberate/speak/consolidate).
 
-import { streamText, convertToModelMessages, type ModelMessage } from 'ai';
+import { streamText, type ModelMessage } from 'ai';
 import { NextRequest, NextResponse } from 'next/server';
 import { getChatModel } from '@/lib/ollama';
 import { buildSystemPrompt } from '@/lib/system-prompt';
@@ -128,7 +128,7 @@ export async function POST(req: NextRequest) {
   const result = streamText({
     model,
     system: systemPrompt,
-    messages: convertToModelMessages(coreMessages),
+    messages: coreMessages,
     tools: mode === 'fast' ? undefined : tools,
     maxSteps,
     temperature: 0.7,
@@ -202,9 +202,9 @@ export async function POST(req: NextRequest) {
   });
 
   // Plain-text streaming response. Tool calls saved at end via onFinish.
-  const stream = result.toTextStreamResult();
-
-  return new Response(stream.textStream, {
+  // AI SDK v7: result.toTextStreamResponse() returns a Response with the
+  // text stream as the body.
+  return result.toTextStreamResponse({
     headers: {
       'Content-Type': 'text/plain; charset=utf-8',
       'Cache-Control': 'no-cache, no-transform',

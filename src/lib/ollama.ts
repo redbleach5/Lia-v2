@@ -110,9 +110,40 @@ async function getProvider() {
 
 /**
  * Returns the model object for use with AI SDK's streamText/generateText.
+ *
+ * If the configured model is not available in Ollama, falls back to the
+ * first available model and warns the user.
  */
 export async function getChatModel() {
   const p = await getProvider();
+
+  // Check if the configured model exists in Ollama
+  const health = await checkOllamaHealth();
+  if (health.ok && health.models.length > 0) {
+    const exactMatch = health.models.find(m => m === currentModel);
+    if (exactMatch) {
+      return p.chatModel(currentModel);
+    }
+
+    // Try partial match (qwen2.5:7b matches qwen2.5:7b-instruct-q5_K_M etc.)
+    const partialMatch = health.models.find(m =>
+      m.startsWith(currentModel.split(':')[0]) ||
+      m.startsWith(currentModel) ||
+      currentModel.startsWith(m.split(':')[0])
+    );
+
+    if (partialMatch) {
+      console.warn(`[ollama] model "${currentModel}" not found, using "${partialMatch}" instead. Set OLLAMA_MODEL in .env to silence this warning.`);
+      return p.chatModel(partialMatch);
+    }
+
+    // Fall back to first available
+    const fallback = health.models[0];
+    console.warn(`[ollama] model "${currentModel}" not found, falling back to first available: "${fallback}". Set OLLAMA_MODEL in .env to silence this warning.`);
+    return p.chatModel(fallback);
+  }
+
+  // Health check failed — try the configured model anyway (will likely 404)
   return p.chatModel(currentModel);
 }
 

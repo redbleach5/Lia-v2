@@ -13,7 +13,7 @@
 // Checkpoint после каждого шага. Resume после рестарта — пока не реализовано
 // (требует persistent queue), но данные в БД есть.
 
-import { streamText, convertToModelMessages, type ModelMessage } from 'ai';
+import { streamText, type ModelMessage } from 'ai';
 import { getChatModel } from '@/lib/ollama';
 import { db } from '@/lib/db';
 import { z } from 'zod';
@@ -378,10 +378,10 @@ ${stepsStr}
 
 Что делаем дальше?`;
 
-  return convertToModelMessages([
+  return [
     { role: 'system', content: systemPrompt },
     { role: 'user', content: userPrompt },
-  ]);
+  ] as ModelMessage[];
 }
 
 // ============================================================================

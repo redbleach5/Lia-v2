@@ -55,9 +55,22 @@ if (globalForVec.__vecDb) {
         source_type text
       )
     `);
-    console.log('[db-vec] vec_virtual table ready');
+
+    // Mapping table: vec0 rowid (integer) → VectorMemory id (UUID string) + episode_id
+    // Created at init so that search doesn't fail with "no such table" on first call
+    // (which happens before any insertVectorMemory has been called).
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS vec_rowid_map (
+        rowid INTEGER PRIMARY KEY,
+        vector_id TEXT NOT NULL,
+        episode_id TEXT NOT NULL
+      )
+    `);
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_vec_rowid_map_episode ON vec_rowid_map(episode_id)`);
+
+    console.log('[db-vec] vec_virtual + vec_rowid_map tables ready');
   } catch (e) {
-    console.error('[db-vec] Failed to create vec_virtual table:', e);
+    console.error('[db-vec] Failed to create vec tables:', e);
     throw e;
   }
 
@@ -115,21 +128,15 @@ export function insertVectorMemory(params: {
   });
 
   // Insert into vec_virtual index (using rowid = hash of id for stable mapping)
-  // We use the VectorMemory.id as the rowid by hashing it to an integer.
-  // Actually vec0 requires integer rowid — we use a counter or hash.
-  // Simpler: store the VectorMemory.id in a metadata table and use auto-increment rowid.
-  // But we don't have that. Workaround: use a separate mapping table.
   const rowid = hashToRowid(params.id);
   const stmt2 = db.prepare(`
-    INSERT INTO vec_virtual (rowid, embedding, episode_id, source_type)
+    INSERT OR REPLACE INTO vec_virtual (rowid, embedding, episode_id, source_type)
     VALUES (?, vec_f32(?), ?, ?)
   `);
   stmt2.run(rowid, embeddingStr, params.episodeId, params.sourceType);
 
   // Store mapping rowid → id so we can JOIN back
-  db.prepare(`
-    CREATE TABLE IF NOT EXISTS vec_rowid_map (rowid INTEGER PRIMARY KEY, vector_id TEXT NOT NULL, episode_id TEXT NOT NULL)
-  `).run();
+  // (vec_rowid_map table is created at init in db-vec.ts:70)
   db.prepare(`INSERT OR REPLACE INTO vec_rowid_map (rowid, vector_id, episode_id) VALUES (?, ?, ?)`)
     .run(rowid, params.id, params.episodeId);
 }

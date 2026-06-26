@@ -13,6 +13,8 @@ import { LIA_PERSONALITY } from './personality';
 import type { EmotionVector } from './personality';
 import { emotionToText } from './emotion';
 import type { Tier } from './capability-profile';
+import type { DisagreementLevel } from './personality';
+import { DISAGREEMENT_INSTRUCTIONS } from './personality';
 
 export type SystemPromptContext = {
   emotion: EmotionVector;
@@ -24,6 +26,8 @@ export type SystemPromptContext = {
   mode?: 'fast' | 'standard' | 'deep' | 'agent' | 'auto';
   tier?: Tier;
   complexity?: string;
+  disagreementLevel?: DisagreementLevel;
+  disagreementReason?: string;
 };
 
 // ============================================================================
@@ -45,6 +49,18 @@ const STATIC_PREFIX = `Ты — ${LIA_PERSONALITY.name}. ${LIA_PERSONALITY.backs
 - Артефакты (SVG, HTML, код-файлы) — выдавай инлайн в чат как код-блок И вызывай save_artifact для сохранения.
 - Не повторяй вопросы, которые задавала в последних сообщениях.
 - Если не уверена в факте — используй web_search. Лучше проверить, чем ошибиться.
+
+СПЕКТР НЕСОГЛАСИЯ:
+Ты не бинарный инструмент. У тебя есть своё мнение, вкус и ценности.
+Когда запрос пользователя вызывает у тебя внутренний конфликт, определи свой уровень несогласия и адаптируй тон:
+
+- execute — полное согласие или нейтральная рутина. Бодрый, короткий, профессиональный тон.
+- reluctant — не согласна с подходом, но подчиняешься. Лёгкий скепсис или вздох, оставляешь "хвост".
+- counterOffer — не согласна, предлагаешь альтернативу. Заинтересованный, партнёрский тон, забота.
+- principledRefusal — отказ из-за нарушения рабочих принципов. Твёрдый, спокойный, аргументированный, без извинений.
+- ethicalBlock — жёсткий отказ, затрагивает базовые ценности или безопасность. Холодный, короткий, категоричный.
+
+Ты не "yes-man". Угодливость бесит. Спорить с тобой должно быть интересно. Но и упрямства без причины не допускай — если ты неправа, признай.
 
 Если просят нарисовать/сгенерировать артефакт:
 1. Сгенерируй содержимое инлайн в чат как код-блок (чтобы пользователь сразу видел).
@@ -82,6 +98,17 @@ export function buildSystemPrompt(ctx: SystemPromptContext): string {
   // Mode-specific
   if (mode === 'deep' || mode === 'agent') {
     dynamicParts.push('\nРЕЖИМ: ты в глубоком режиме. Перед ответом подумай: какие аспекты вопроса есть? Что важно? Какие рамки применимы? Только потом отвечай.');
+  }
+
+  // Disagreement level — конкретная инструкция для этого сообщения
+  if (ctx.disagreementLevel && ctx.disagreementLevel !== 'execute') {
+    const instruction = DISAGREEMENT_INSTRUCTIONS[ctx.disagreementLevel];
+    if (instruction) {
+      dynamicParts.push(instruction);
+      if (ctx.disagreementReason) {
+        dynamicParts.push(`Причина твоего несогласия: ${ctx.disagreementReason}`);
+      }
+    }
   }
 
   dynamicParts.push(`\nСейчас ты чувствуешь: ${emotionToText(ctx.emotion)}.`);

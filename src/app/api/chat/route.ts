@@ -22,6 +22,7 @@ import { recall, remember, formatVectorHitsForPrompt } from '@/lib/memory/vector
 import { listAgentTasks, formatOpenTasksForPrompt } from '@/lib/agent/task';
 import { perceive, createInitialEmotion, decayEmotion, dominantEmotion } from '@/lib/emotion';
 import type { EmotionVector } from '@/lib/personality';
+import { assessDisagreement, DISAGREEMENT_LABELS_RU } from '@/lib/personality';
 import { buildRLState } from '@/lib/rl/types';
 import { recordExperience } from '@/lib/rl/recorder';
 import { getCognitiveParams, type CapabilityProfile } from '@/lib/capability-profile';
@@ -84,6 +85,12 @@ export async function POST(req: NextRequest) {
   currentEmotion = decayEmotion(currentEmotion, dtMin);
   const { emotion: perceivedEmotion, triggers } = perceive(text, currentEmotion);
 
+  // ── 4b. Assess disagreement (spectrum: execute → reluctant → counterOffer → principledRefusal → ethicalBlock) ──
+  const disagreement = assessDisagreement(text);
+  if (disagreement.level !== 'execute') {
+    console.log(`[chat] disagreement: ${disagreement.level} — ${disagreement.reason}`);
+  }
+
   // ── 5. Save user message ──
   const userMsg = await saveMessage(episodeId, {
     role: 'user',
@@ -118,6 +125,8 @@ export async function POST(req: NextRequest) {
     mode: userMode,
     tier,
     complexity,
+    disagreementLevel: disagreement.level,
+    disagreementReason: disagreement.reason,
   });
 
   // ── 7. Build messages array ──
@@ -244,6 +253,8 @@ export async function POST(req: NextRequest) {
       'X-Deliberate': String(plan.deliberate),
       'X-SelfCheck': String(plan.selfCheck),
       'X-ModelSize': String(profile?.modelSize ?? 0),
+      'X-Disagreement': disagreement.level,
+      'X-DisagreementLabel': DISAGREEMENT_LABELS_RU[disagreement.level],
     },
   });
 }

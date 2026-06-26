@@ -10,7 +10,7 @@
 //   7. Background: smart notification check (if hardware-limited)
 //   8. Save messages + RL experience
 
-import { streamText, type ModelMessage } from 'ai';
+import { streamText, isStepCount, type ModelMessage } from 'ai';
 import { NextRequest, NextResponse } from 'next/server';
 import { getChatModel } from '@/lib/ollama';
 import { buildSystemPrompt } from '@/lib/system-prompt';
@@ -188,7 +188,7 @@ export async function POST(req: NextRequest) {
     system: systemPrompt + (deliberateContext ? `\n\nВНУТРЕННИЙ АНАЛИЗ:\n${deliberateContext}` : ''),
     messages: coreMessages,
     tools: plan.toolsEnabled ? tools : undefined,
-    maxSteps: userMode === 'agent' ? 5 : 1,
+    stopWhen: userMode === 'agent' ? isStepCount(5) : isStepCount(1),
     temperature: 0.7,
     maxTokens: plan.maxTokens,
     topP: 0.9,
@@ -259,12 +259,12 @@ export async function POST(req: NextRequest) {
     onStepFinish: ({ toolCalls: tcs, toolResults: trs }) => {
       if (tcs) {
         for (let i = 0; i < tcs.length; i++) {
-          const tc = tcs[i];
-          const tr = trs?.[i];
+          const tc = tcs[i] as { toolName: string; input: unknown };
+          const tr = trs?.[i] as { output: unknown } | undefined;
           toolCallLog.push({
             name: tc.toolName,
-            input: tc.args,
-            output: tr?.result,
+            input: tc.input,
+            output: tr?.output,
           });
         }
       }

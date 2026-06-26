@@ -97,27 +97,25 @@ async function setCachedProfile(profile: CapabilityProfile): Promise<void> {
 // ============================================================================
 
 /**
- * Detect GPU info via nvidia-smi.
- * Returns null if nvidia-smi not available (CPU-only or AMD/Intel GPU).
+ * Detect GPU info via nvidia-smi (Linux/Windows) or system_profiler (macOS).
+ * Returns null if no GPU detected (true CPU-only).
+ *
+ * macOS: Apple Silicon (M1/M2/M3) uses Metal via unified memory.
+ * We detect this via `system_profiler SPDisplaysDataType` and report
+ * VRAM as half of total system RAM (conservative estimate for ML workload).
  */
 function detectGpu(): { count: number; vramGb: number; name: string | null } | null {
+  // ── 1. Try nvidia-smi (Linux/Windows with NVIDIA GPU) ──
   try {
-    // Check if nvidia-smi exists
     execSync('which nvidia-smi', { stdio: 'ignore' });
-  } catch {
-    return null;
-  }
-
-  try {
-    // Get GPU count
+    // nvidia-smi exists — use it
     const countStr = execSync('nvidia-smi --query-gpu=count --format=csv,noheader,nounits', {
       encoding: 'utf-8',
       timeout: 5000,
     }).trim();
     const count = parseInt(countStr.split('\n')[0], 10) || 0;
-    if (count === 0) return null;
+    if (count === 0) throw new Error('no GPUs');
 
-    // Get total VRAM across all GPUs
     const vramStr = execSync('nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits', {
       encoding: 'utf-8',
       timeout: 5000,
@@ -127,7 +125,6 @@ function detectGpu(): { count: number; vramGb: number; name: string | null } | n
       .reduce((sum, line) => sum + (parseInt(line.trim(), 10) || 0), 0);
     const vramGb = vramMb / 1024;
 
-    // Get first GPU name
     const nameStr = execSync('nvidia-smi --query-gpu=name --format=csv,noheader', {
       encoding: 'utf-8',
       timeout: 5000,
@@ -136,8 +133,55 @@ function detectGpu(): { count: number; vramGb: number; name: string | null } | n
 
     return { count, vramGb, name };
   } catch {
-    return null;
+    // nvidia-smi not available — fall through to macOS detection
   }
+
+  // ── 2. Try macOS detection (Apple Silicon / Intel Mac with GPU) ──
+  if (process.platform === 'darwin') {
+    try {
+      const output = execSync('system_profiler SPDisplaysDataType -json', {
+        encoding: 'utf-8',
+        timeout: 5000,
+      });
+      const data = JSON.parse(output);
+      const gpus = data?.SPDisplaysDataType ?? [];
+      if (gpus.length === 0) return null;
+
+      const gpu = gpus[0];
+      const name = gpu?.sppci_model ?? 'Apple GPU';
+      const isAppleSilicon = /apple/i.test(name) || /m[1-4]/i.test(name);
+
+      if (isAppleSilicon) {
+        // Apple Silicon — unified memory. Get total RAM via sysctl.
+        let vramGb = 8; // default fallback
+        try {
+          const memBytes = parseInt(
+            execSync('sysctl -n hw.memsize', { encoding: 'utf-8', timeout: 5000 }).trim(),
+            10,
+          );
+          vramGb = memBytes / (1024 * 1024 * 1024);
+        } catch { /* use fallback */ }
+
+        // Conservative: use half of total RAM as "VRAM" for ML
+        // (the other half is needed for OS + app overhead)
+        return {
+          count: 1,
+          vramGb: vramGb / 2,
+          name: `${name} (${vramGb.toFixed(0)} GB unified)`,
+        };
+      }
+
+      // Intel Mac with discrete GPU (AMD/NVIDIA)
+      const vramStr = gpu?.sppci_vram ?? gpu?.['sppci_vram-shared'] ?? '';
+      const vramMatch = vramStr.match(/(\d+)\s*GB/i);
+      const vramGb = vramMatch ? parseInt(vramMatch[1], 10) : 4;
+      return { count: 1, vramGb, name };
+    } catch {
+      // system_profiler failed — treat as CPU-only
+    }
+  }
+
+  return null;
 }
 
 /**

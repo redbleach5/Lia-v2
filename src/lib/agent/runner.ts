@@ -13,7 +13,7 @@
 // Checkpoint после каждого шага. Resume после рестарта — пока не реализовано
 // (требует persistent queue), но данные в БД есть.
 
-import { streamText, type ModelMessage } from 'ai';
+import { streamText, isStepCount, type ModelMessage } from 'ai';
 import { getChatModel } from '@/lib/ollama';
 import { db } from '@/lib/db';
 import { z } from 'zod';
@@ -411,20 +411,20 @@ async function executeStep(
     model,
     messages,
     tools,
-    maxSteps: 3, // allow tool chaining within one step
+    stopWhen: isStepCount(3), // allow tool chaining within one step
     temperature: EXECUTION_TEMPERATURE,
     maxTokens: 1500,
     onStepFinish: ({ toolCalls: tcs, toolResults: trs }) => {
       if (tcs) {
         for (let i = 0; i < tcs.length; i++) {
-          const tc = tcs[i];
-          const tr = trs?.[i];
+          const tc = tcs[i] as { toolName: string; input: unknown };
+          const tr = trs?.[i] as { output: unknown; error?: string } | undefined;
           emitAgentEvent({
             type: 'tool_start',
             taskId,
             step: stepNum,
             tool: tc.toolName,
-            input: tc.args,
+            input: tc.input,
             ts: Date.now(),
           });
           emitAgentEvent({
@@ -433,13 +433,13 @@ async function executeStep(
             step: stepNum,
             tool: tc.toolName,
             success: !tr?.error,
-            output: tr?.result,
+            output: tr?.output,
             ts: Date.now(),
           });
           toolCalls.push({
             name: tc.toolName,
-            input: tc.args,
-            output: tr?.result,
+            input: tc.input,
+            output: tr?.output,
             success: !tr?.error,
           });
         }

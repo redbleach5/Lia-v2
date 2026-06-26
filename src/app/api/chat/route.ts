@@ -23,6 +23,12 @@ import { listAgentTasks, formatOpenTasksForPrompt } from '@/lib/agent/task';
 import { perceive, createInitialEmotion, decayEmotion, dominantEmotion } from '@/lib/emotion';
 import type { EmotionVector } from '@/lib/personality';
 import { assessDisagreement, DISAGREEMENT_LABELS_RU } from '@/lib/personality';
+import {
+  recordEmotionalAnchor,
+  recallEmotionalAnchors,
+  detectEmotionType,
+  formatEmotionalAnchorsForPrompt,
+} from '@/lib/memory/emotional-memory';
 import { buildRLState } from '@/lib/rl/types';
 import { recordExperience } from '@/lib/rl/recorder';
 import { getCognitiveParams, type CapabilityProfile } from '@/lib/capability-profile';
@@ -100,11 +106,17 @@ export async function POST(req: NextRequest) {
   autoTitleEpisode(episodeId, text).catch(() => null);
 
   // ── 6. Build context ──
-  const [globalFacts, episodeFacts, vectorHits, agentTasks] = await Promise.all([
+  const [globalFacts, episodeFacts, vectorHits, agentTasks, emotionalRecall] = await Promise.all([
     getAllGlobalFacts(),
     getEpisodeFacts(episodeId),
     recall({ episodeId, query: text, limit: 3, minSimilarity: 0.35 }),
     listAgentTasks(episodeId),
+    recallEmotionalAnchors({
+      episodeId,
+      queryText: text,
+      currentEmotion: perceivedEmotion,
+      limit: 3,
+    }).catch(() => ({ anchors: [], warning: null })),
   ]);
 
   const recentLiaMessages = recentMessages
@@ -127,6 +139,8 @@ export async function POST(req: NextRequest) {
     complexity,
     disagreementLevel: disagreement.level,
     disagreementReason: disagreement.reason,
+    emotionalAnchors: formatEmotionalAnchorsForPrompt(emotionalRecall.anchors) || undefined,
+    emotionalWarning: emotionalRecall.warning || undefined,
   });
 
   // ── 7. Build messages array ──
@@ -201,6 +215,27 @@ export async function POST(req: NextRequest) {
         sourceType: 'dialogue',
         text: `User: ${text}\nLia: ${fullText.slice(0, 500)}`,
       }).catch(() => null);
+
+      // ── Record emotional anchor ──
+      // Запоминаем не только что было сказано, но и какую эмоцию это вызвало.
+      // Это позволит Лии позже вспомнить: "в прошлый раз ты злился, когда
+      // мы обсуждали X" — и адаптировать тон.
+      const emotionType = detectEmotionType(perceivedEmotion, triggers);
+      const maxDelta = Math.max(
+        Math.abs(perceivedEmotion.joy - 0.55),
+        Math.abs(perceivedEmotion.irritation - 0.1),
+        Math.abs(perceivedEmotion.sadness - 0.15),
+      );
+      if (maxDelta > 0.15) {
+        recordEmotionalAnchor({
+          episodeId,
+          emotion: emotionType,
+          intensity: Math.min(1, maxDelta * 1.5),
+          trigger: text.slice(0, 100),
+          context: text.slice(0, 500),
+          emotionVector: perceivedEmotion,
+        }).catch(() => null);
+      }
 
       // RL experience
       try {

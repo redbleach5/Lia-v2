@@ -21,10 +21,11 @@ model Episode {
   endedAt   DateTime?
   summary   String?
 
-  messages       Message[]
-  episodeFacts   EpisodeFact[]
-  vectorMemories VectorMemory[]
-  agentTasks     AgentTask[]
+  messages         Message[]
+  episodeFacts     EpisodeFact[]
+  vectorMemories   VectorMemory[]
+  emotionalMemories EmotionalMemory[]
+  agentTasks       AgentTask[]
 }
 
 // ============================================================================
@@ -117,6 +118,54 @@ model VectorMemory {
 
   @@index([episodeId])
   @@index([sourceType])
+}
+
+// ============================================================================
+// Emotional memory — эмоциональные якоря ("как я себя чувствовал когда...")
+// ============================================================================
+// Вдохновлено моделью человеческой памяти: мы помним не только что было,
+// но и как мы себя чувствовали. Лия может сказать: "В прошлый раз, когда
+// мы обсуждали этот проект, ты был раздражён — сейчас ты выглядишь спокойнее,
+// могу я вернуться к той теме?"
+//
+// Decay: intensity экспоненциально затухает (halfTime ~180 дней).
+// Консолидация: раз в неделю ReflectionEngine сливает похожие эпизоды
+// в одно семантическое воспоминание (consolidated=true).
+model EmotionalMemory {
+  id         String   @id @default(cuid())
+  episodeId  String
+  episode    Episode @relation(fields: [episodeId], references: [id], onDelete: Cascade)
+
+  // Тип эмоции: 'frustration' | 'joy' | 'sadness' | 'anger' | 'anxiety' |
+  // 'enthusiasm' | 'curiosity' | 'warmth' | 'boredom' | 'other'
+  emotion    String
+
+  // Интенсивность 0..1 — насколько сильно пользователь это чувствовал
+  intensity  Float    @default(0.5)
+
+  // Что вызвало эмоцию — короткое описание (LLM-извлечение)
+  trigger    String
+
+  // Контекст — что пользователь говорил в этот момент (до 1000 символов)
+  context    String
+
+  // Текущий тон пользователя при этом сообщении (rule-based perceive result)
+  // JSON: { joy, curiosity, calm, irritation, sadness }
+  emotionVectorJson String?
+
+  // Embedding контекста — для поиска похожих ситуаций (через sqlite-vec)
+  embedding  Bytes?
+
+  // Флаг консолидации — если true, эта запись является "слитой" из нескольких
+  consolidated Boolean @default(false)
+  // Если consolidated=true, здесь ID исходных эпизодов (JSON array)
+  sourceIds  String?
+
+  ts         DateTime @default(now())
+
+  @@index([episodeId])
+  @@index([emotion])
+  @@index([intensity])
 }
 
 // ============================================================================

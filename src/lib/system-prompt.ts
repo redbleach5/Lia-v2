@@ -28,6 +28,8 @@ export type SystemPromptContext = {
   complexity?: string;
   disagreementLevel?: DisagreementLevel;
   disagreementReason?: string;
+  emotionalAnchors?: string;
+  emotionalWarning?: string;
 };
 
 // ============================================================================
@@ -112,6 +114,17 @@ export function buildSystemPrompt(ctx: SystemPromptContext): string {
   }
 
   dynamicParts.push(`\nСейчас ты чувствуешь: ${emotionToText(ctx.emotion)}.`);
+
+  // Emotional anchors — "помни как было"
+  if (ctx.emotionalAnchors) {
+    dynamicParts.push(`\nЭмоциональные воспоминания из этого чата (как пользователь чувствовал себя в похожих ситуациях раньше):\n${ctx.emotionalAnchors}`);
+    dynamicParts.push('\nИспользуй эти воспоминания мягко — не упоминай их прямо, если пользователь сам не поднимает тему. Но учитывай их в тоне: если раньше пользователь был раздражён в похожей ситуации, будь аккуратнее.');
+  }
+
+  // Anti-pattern warning — "не бередить раны"
+  if (ctx.emotionalWarning) {
+    dynamicParts.push(`\n⚠ ${ctx.emotionalWarning}`);
+  }
 
   if (ctx.userProfile) {
     dynamicParts.push(`\nЧто ты знаешь о собеседнике:\n${ctx.userProfile}`);

@@ -13,35 +13,14 @@
 
 import Database from 'better-sqlite3';
 import path from 'path';
-import { mkdirSync, existsSync } from 'fs';
+import { mkdirSync } from 'fs';
 import { randomUUID } from 'crypto';
-import { arch, platform } from 'node:process';
+import { resolveSqliteVecPath, resolveDbPath } from '@/lib/paths';
 
 // ============================================================================
-// sqlite-vec loader
+// DB path — cross-platform resolution via paths.ts
 // ============================================================================
-function getSqliteVecPath(): string {
-  const ext = platform === 'win32' ? 'dll' : platform === 'darwin' ? 'dylib' : 'so';
-  const osName = platform === 'win32' ? 'windows' : platform;
-  const pkgName = `sqlite-vec-${osName}-${arch}`;
-  const filename = `vec0.${ext}`;
-
-  const candidates = [
-    path.join(process.cwd(), 'node_modules', pkgName, filename),
-    path.join(process.cwd(), '..', '..', 'node_modules', pkgName, filename),
-  ];
-
-  for (const candidate of candidates) {
-    if (existsSync(candidate)) return candidate;
-  }
-
-  throw new Error(
-    `sqlite-vec native binary not found. Looked for:\n${candidates.join('\n')}\n` +
-    `Install it: bun add ${pkgName}`
-  );
-}
-
-const DB_PATH = process.env.DATABASE_URL?.replace('file:', '') || path.join(process.cwd(), 'db/custom.db');
+const DB_PATH = resolveDbPath(process.env.DATABASE_URL);
 
 mkdirSync(path.dirname(DB_PATH), { recursive: true });
 
@@ -58,7 +37,7 @@ if (globalForVec.__vecDb) {
 
   // Load sqlite-vec extension
   try {
-    const vecPath = getSqliteVecPath();
+    const vecPath = resolveSqliteVecPath();
     db.loadExtension(vecPath);
     console.log('[db-vec] sqlite-vec loaded from', vecPath);
   } catch (e) {

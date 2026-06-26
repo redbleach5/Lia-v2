@@ -3,15 +3,12 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { readFile } from 'fs/promises';
 import path from 'path';
+import { PATHS, sanitizeFilename } from '@/lib/paths';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
-const ARTIFACTS_DIR = path.join(process.cwd(), 'download', 'lia-artifacts');
-
-// Strict whitelist — prevents path traversal
-const SAFE_FILENAME = /^[a-zA-Z0-9._-]+$/;
-
+// MIME types for common artifact extensions
 const MIME_MAP: Record<string, string> = {
   '.svg': 'image/svg+xml',
   '.html': 'text/html',
@@ -38,12 +35,15 @@ export async function GET(
 ) {
   const { filename } = await params;
 
-  // Sanitize
-  if (!SAFE_FILENAME.test(filename)) {
+  // Sanitize — prevents path traversal on all platforms
+  const safeName = sanitizeFilename(filename);
+  if (!safeName || safeName !== filename) {
     return NextResponse.json({ error: 'invalid filename' }, { status: 400 });
   }
 
-  const filePath = path.join(ARTIFACTS_DIR, filename);
+  // Use path.basename to strip any directory components (defense in depth)
+  const basename = path.basename(filename);
+  const filePath = path.join(PATHS.artifacts, basename);
 
   try {
     const buf = await readFile(filePath);
@@ -54,7 +54,7 @@ export async function GET(
       headers: {
         'Content-Type': mime,
         'Content-Length': String(buf.length),
-        'Content-Disposition': `attachment; filename="${filename}"`,
+        'Content-Disposition': `attachment; filename="${basename}"`,
         'Cache-Control': 'private, max-age=3600',
       },
     });

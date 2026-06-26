@@ -21,8 +21,10 @@ import { saveMessage, autoTitleEpisode, getMessages } from '@/lib/memory/episode
 import { getAllGlobalFacts, formatGlobalFactsForPrompt, getEpisodeFacts, formatEpisodeFactsForPrompt } from '@/lib/memory/facts';
 import { recall, remember, formatVectorHitsForPrompt } from '@/lib/memory/vector';
 import { listAgentTasks, formatOpenTasksForPrompt } from '@/lib/agent/task';
-import { perceive, createInitialEmotion, decayEmotion } from '@/lib/emotion';
+import { perceive, createInitialEmotion, decayEmotion, dominantEmotion } from '@/lib/emotion';
 import type { EmotionVector } from '@/lib/personality';
+import { buildRLState, type RLRewardSignals } from '@/lib/rl/types';
+import { recordExperience } from '@/lib/rl/recorder';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -155,6 +157,34 @@ export async function POST(req: NextRequest) {
         sourceType: 'dialogue',
         text: `User: ${text}\nLia: ${fullText.slice(0, 500)}`,
       }).catch(() => null);
+
+      // ── Record RL experience ──
+      // Action is implicitly chosen by the LLM response style — we approximate
+      // by post-hoc classifying the response (length-based heuristic).
+      // The Python sidecar re-trains from these (state, action) pairs.
+      try {
+        const rlAction = classifyResponseAction(fullText, mode);
+        const rlState = buildRLState({
+          emotion: perceivedEmotion,
+          drives: {
+            curiosity: 0.5, social: 0.5, safety: 0.7, rest: 0.3, // approx — drives not yet tracked in v2
+          },
+          context: {
+            secondsSinceLastUser: 0, // just responded
+            episodeMessageCount: recentMessages.length + 2,
+            timeOfDay: (new Date().getHours() * 60 + new Date().getMinutes()) / (24 * 60),
+            dominantEmotionIdx: ['joy', 'curiosity', 'calm', 'irritation', 'sadness']
+              .indexOf(dominantEmotion(perceivedEmotion)),
+          },
+        });
+        await recordExperience({
+          state: rlState,
+          action: rlAction,
+          episodeId,
+        });
+      } catch (e) {
+        console.warn('[api/chat] RL experience record failed (non-fatal):', e);
+      }
     },
     onStepFinish: ({ toolCalls, toolResults }) => {
       if (toolCalls) {
@@ -202,4 +232,51 @@ function safeParseEmotion(json: string): EmotionVector | null {
   } catch {
     return null;
   }
+}
+
+// ============================================================================
+// RL action classifier — post-hoc labels the response with an action ID.
+// ============================================================================
+// This is a heuristic that maps the response text to one of the 9 RL actions.
+// In the future, the LLM itself could output the chosen action via structured
+// output. For now, this gives us training data to bootstrap the policy.
+function classifyResponseAction(response: string, mode: string): number {
+  const trimmed = response.trim();
+  const len = trimmed.length;
+  const lower = trimmed.toLowerCase();
+
+  // Mode-based: agent mode is business-like
+  if (mode === 'agent') return 2; // BUSINESS_RESPONSE
+
+  // Length-based: very short → concise, very long → detailed
+  if (len < 100) return 7; // BE_CONCISE
+  if (len > 800) return 8; // BE_DETAILED
+
+  // Content-based: contains question → ASK_QUESTION
+  if (lower.includes('?') || /\b(а ты|как ты|что ты|расскажи о себе)\b/i.test(lower)) {
+    return 3; // ASK_QUESTION
+  }
+
+  // Warmth markers → WARM_RESPONSE
+  if (/\b(рада|скучала|хорошо|милая|тепло|обнимаю)\b/i.test(lower)) {
+    return 1; // WARM_RESPONSE
+  }
+
+  // Help offer → OFFER_HELP
+  if (/\b(могу помочь|хочешь я|давай я|помочь с)\b/i.test(lower)) {
+    return 4; // OFFER_HELP
+  }
+
+  // Personal thought → SHARE_THOUGHT
+  if (/\b(я подумала|мне кажется|знаешь что|я тут подумала)\b/i.test(lower)) {
+    return 5; // SHARE_THOUGHT
+  }
+
+  // Humor → CRACK_JOKE
+  if (/\b(шучу|ха-ха|смеюсь|прикол|забавно)\b/i.test(lower)) {
+    return 6; // CRACK_JOKE
+  }
+
+  // Default: business-like response
+  return 2; // BUSINESS_RESPONSE
 }

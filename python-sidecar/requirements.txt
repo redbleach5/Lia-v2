@@ -1,0 +1,21 @@
+# Python dependencies for Lia RL sidecar
+# Install: pip install -r requirements.txt
+# Or with uv: uv pip install -r requirements.txt
+
+# Web framework
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+pydantic==2.10.4
+
+# ML
+torch==2.5.1
+numpy==2.2.1
+
+# ONNX export (for inference in Next.js via onnxruntime-node)
+onnx==1.17.0
+
+# SQLite (read RLExperience table from the same DB as Next.js)
+# Note: sqlite3 is in Python stdlib, no extra dep needed
+
+# Utils
+python-multipart==0.0.20

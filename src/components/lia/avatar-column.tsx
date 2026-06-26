@@ -5,6 +5,7 @@ import { useChat } from '@/hooks/use-chat';
 import { useAgent } from '@/hooks/use-agent';
 import { AvatarSvg, EmotionBars } from './avatar-svg';
 import { AgentPanel } from './agent-panel';
+import { RLPanel } from './rl-panel';
 import { Sparkles } from 'lucide-react';
 import { useState, type ReactNode } from 'react';
 import dynamic from 'next/dynamic';
@@ -18,7 +19,6 @@ const VrmAvatar = dynamic(() => import('./vrm-avatar').then(m => m.VrmAvatar), {
 export function AvatarColumn() {
   const emotion = useChatStore(s => s.emotion);
   const isStreaming = useChatStore(s => s.isStreaming);
-  const agentTasks = useChatStore(s => s.agentTasks);
   const [useVrm, setUseVrm] = useState(true);
 
   return (
@@ -64,6 +64,9 @@ export function AvatarColumn() {
 
         {/* Agent tasks */}
         <AgentPanel />
+
+        {/* RL — обучаемая личность */}
+        <RLPanel />
       </div>
     </aside>
   );

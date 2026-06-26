@@ -187,7 +187,7 @@ model AgentArtifact {
 }
 
 // ============================================================================
-// RL model versions — для обучаемой личности (фаза 6)
+// RL model versions — для обучаемой личности
 // ============================================================================
 // В MVP не используется, но таблица создаётся, чтобы потом не мигрировать.
 model RlModelVersion {
@@ -197,6 +197,37 @@ model RlModelVersion {
   metricsJson   String
   parentVersion Int?
   active        Boolean  @default(false)
+}
+
+// ============================================================================
+// RL experiences — training data for the policy network
+// ============================================================================
+// Written by Next.js side on each user message.
+// Read by python-sidecar for training (PPO).
+model RLExperience {
+  id                 String   @id @default(cuid())
+  // State before action (emotion 5 + drives 4 + context 4 = 13 dims)
+  stateJson          String
+  // Action taken (0=WAIT, 1=WARM_RESPONSE, ...)
+  action             Int
+  // Reward computed after user response
+  reward             Float    @default(0)
+  // State after action
+  nextStateJson      String
+  // Reward signals
+  userResponded      Boolean  @default(false)
+  responseLatencySec Float    @default(0)
+  messageLength      Int      @default(0)
+  wasRepeated        Boolean  @default(false)
+  irritationDelta    Float    @default(0)
+  userMessage        String   @default("")
+  // For grouping
+  episodeId          String?
+  policyVersion      Int?
+  createdAt          DateTime @default(now())
+
+  @@index([episodeId])
+  @@index([createdAt])
 }
 
 // ============================================================================

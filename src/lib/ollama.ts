@@ -156,15 +156,54 @@ export async function getModelName(): Promise<string> {
 }
 
 // ============================================================================
-// Embeddings — direct HTTP to Ollama (AI SDK doesn't standardize embeddings well)
+// Embeddings — direct HTTP to Ollama
 // ============================================================================
+//
+// Embed model is auto-detected from available models — user doesn't need to
+// choose. We look for known embed model prefixes (nomic-embed, mxbai-embed,
+// bge-m3, snowflake-arctic-embed). If none found, we try the configured one
+// (default 'nomic-embed-text') and surface a clear error if it's missing.
+
+const EMBED_MODEL_PREFIXES = [
+  'nomic-embed-text',
+  'mxbai-embed-large',
+  'bge-m3',
+  'snowflake-arctic-embed',
+];
+
+function pickEmbedModelFromList(available: string[]): string | null {
+  for (const prefix of EMBED_MODEL_PREFIXES) {
+    const match = available.find(m => m.startsWith(prefix));
+    if (match) return match;
+  }
+  return null;
+}
 
 export async function embed(text: string): Promise<Float32Array> {
   await loadSettings();
+
+  // Auto-detect embed model if the current one isn't in the available list
+  let modelToUse = currentEmbedModel;
+  const health = await checkOllamaHealth();
+  if (health.ok && health.models.length > 0) {
+    const exactMatch = health.models.find(m => m === currentEmbedModel);
+    if (!exactMatch) {
+      const detected = pickEmbedModelFromList(health.models);
+      if (detected) {
+        modelToUse = detected;
+        // Persist the auto-detected choice so we don't re-detect every call
+        if (detected !== currentEmbedModel) {
+          currentEmbedModel = detected;
+          await persistSetting('ollama_embed_model', detected).catch(() => null);
+        }
+      }
+    }
+  }
+
   const res = await fetch(`${currentBaseUrl}/api/embed`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ model: currentEmbedModel, input: text }),
+    body: JSON.stringify({ model: modelToUse, input: text }),
     signal: AbortSignal.timeout(30_000),
   });
   if (!res.ok) {

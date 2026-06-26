@@ -44,7 +44,10 @@ export async function GET() {
     ollamaOk: health.ok,
     ollamaError: health.error,
     availableModels: health.models ?? [],
-    availableEmbedModels: (health.models ?? []).filter(m =>
+    // Hide embed model from UI — it's auto-detected internally.
+    // We expose hasEmbedModel only as a boolean for the UI to show a hint
+    // if the user needs to install one.
+    hasEmbedModel: (health.models ?? []).some(m =>
       m.startsWith('nomic-embed') ||
       m.startsWith('mxbai-embed') ||
       m.startsWith('bge-m3') ||

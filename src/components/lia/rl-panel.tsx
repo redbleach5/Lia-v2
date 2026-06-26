@@ -119,7 +119,7 @@ export function RLPanel() {
       <div className="flex items-center gap-2 mb-3">
         <Brain className="w-3.5 h-3.5 text-violet-400" />
         <h3 className="text-xs font-medium uppercase tracking-wider text-muted-foreground">
-          Обучаемая личность
+          Стиль общения
         </h3>
         <button
           onClick={refresh}
@@ -131,7 +131,7 @@ export function RLPanel() {
         </button>
       </div>
 
-      {/* Sidecar status */}
+      {/* Движок обучения status */}
       <div className={cn(
         'rounded-md border p-2 mb-2 text-[11px] flex items-center gap-2',
         stats?.sidecar_ok
@@ -141,12 +141,12 @@ export function RLPanel() {
         <Cpu className="w-3 h-3 shrink-0" />
         <span>
           {stats?.sidecar_ok
-            ? 'Python sidecar запущен'
-            : 'Python sidecar не запущен'}
+            ? 'Движок обучения работает'
+            : 'Движок обучения не запущен'}
         </span>
         {!stats?.sidecar_ok && (
           <span className="ml-auto text-text-dim text-[10px]">
-            запусти: python python-sidecar/main.py
+            включается в настройках
           </span>
         )}
       </div>
@@ -155,13 +155,13 @@ export function RLPanel() {
       {stats && (
         <div className="grid grid-cols-2 gap-2 mb-3 text-[11px]">
           <div className="rounded border border-border bg-surface/50 p-2">
-            <div className="text-text-dim">Опыт в БД</div>
+            <div className="text-text-dim">Разговоров записано</div>
             <div className="text-base font-mono text-foreground">
               {stats.local_experiences}
             </div>
           </div>
           <div className="rounded border border-border bg-surface/50 p-2">
-            <div className="text-text-dim">Моделей</div>
+            <div className="text-text-dim">Стилей создано</div>
             <div className="text-base font-mono text-foreground">
               {stats.sidecar_stats?.model_versions?.length ?? 0}
             </div>
@@ -169,16 +169,16 @@ export function RLPanel() {
         </div>
       )}
 
-      {/* Active version */}
+      {/* Активная версия */}
       {stats?.sidecar_stats?.active_version && (
         <div className="rounded border border-accent/40 bg-accent/5 p-2 mb-2 text-[11px] flex items-center gap-2">
           <Check className="w-3 h-3 text-accent" />
-          <span className="text-muted-foreground">Активна:</span>
+          <span className="text-muted-foreground">Активен стиль:</span>
           <span className="font-mono text-accent">v{stats.sidecar_stats.active_version}</span>
         </div>
       )}
 
-      {/* Train button */}
+      {/* Кнопка обучения */}
       <button
         onClick={train}
         disabled={training || !stats?.sidecar_ok}
@@ -193,32 +193,27 @@ export function RLPanel() {
         ) : (
           <Play className="w-3 h-3" />
         )}
-        <span>{training ? 'Обучаю…' : 'Обучить новую политику'}</span>
+        <span>{training ? 'Учу…' : 'Обучить новый стиль'}</span>
       </button>
 
-      {/* Train result */}
+      {/* Результат */}
       {trainResult && (
         <div className="rounded border border-success/40 bg-success/5 p-2 mb-2 text-[11px]">
           <div className="flex items-center gap-1.5 text-success mb-1">
             <TrendingUp className="w-3 h-3" />
-            <span className="font-medium">Готово: v{trainResult.version}</span>
+            <span className="font-medium">Готово: стиль v{trainResult.version}</span>
           </div>
           <div className="text-text-dim">
-            avg reward: <span className="font-mono text-foreground">{trainResult.avg_reward.toFixed(3)}</span>
-          </div>
-          <div className="text-text-dim">
-            samples: <span className="font-mono text-foreground">{trainResult.samples}</span>
-            {' · '}
-            duration: <span className="font-mono text-foreground">{trainResult.duration.toFixed(1)}s</span>
+            изучено разговоров: <span className="font-mono text-foreground">{trainResult.samples}</span>
           </div>
         </div>
       )}
 
-      {/* Model versions list */}
+      {/* Список версий */}
       {stats?.sidecar_stats?.model_versions && stats.sidecar_stats.model_versions.length > 0 && (
         <div className="space-y-1 mt-2">
           <div className="text-[10px] uppercase tracking-wider text-text-dim mb-1">
-            Версии
+            Версии стиля
           </div>
           {stats.sidecar_stats.model_versions.map(m => {
             const isActive = m.version === stats.sidecar_stats?.active_version;
@@ -231,15 +226,12 @@ export function RLPanel() {
                 )}
               >
                 <span className="font-mono">v{m.version}</span>
-                <span className="text-text-dim">
-                  {m.size_onnx_kb.toFixed(0)} КБ
-                </span>
                 {!isActive && (
                   <button
                     onClick={() => activate(m.version)}
                     className="ml-auto text-[10px] text-accent hover:text-accent/80 transition-colors"
                   >
-                    активировать
+                    включить
                   </button>
                 )}
                 {isActive && (
@@ -251,19 +243,13 @@ export function RLPanel() {
         </div>
       )}
 
-      {/* Error */}
+      {/* Ошибка */}
       {error && (
         <div className="rounded border border-destructive/40 bg-destructive/5 p-2 mt-2 text-[11px] text-destructive flex items-start gap-1.5">
           <AlertCircle className="w-3 h-3 mt-0.5 shrink-0" />
           <span className="leading-relaxed">{error}</span>
         </div>
       )}
-
-      {/* Reward function note */}
-      <div className="mt-3 p-2 rounded border border-border bg-surface/30 text-[10px] text-text-dim leading-relaxed">
-        Reward-функция редактируется в <code className="font-mono">python-sidecar/rl/reward.py</code>.
-        Sidecar перезагружает её при каждом обучении.
-      </div>
     </div>
   );
 }

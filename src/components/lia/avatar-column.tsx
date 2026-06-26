@@ -1,14 +1,15 @@
 'use client';
 
 import { useChatStore } from '@/stores/chat-store';
-import { AvatarSvg, EmotionBars } from './avatar-svg';
+import { EmotionBars } from './avatar-svg';
+import { Live2DAvatar } from './live2d-avatar';
 import { AgentPanel } from './agent-panel';
 import { RLPanel } from './rl-panel';
 import { Sparkles } from 'lucide-react';
 import { useState, useEffect, type ReactNode } from 'react';
 import dynamic from 'next/dynamic';
 
-// VRM is heavy + needs browser APIs — load dynamically, no SSR
+// VRM (3D) is heavy + needs browser APIs — load dynamically, no SSR
 const VrmAvatar = dynamic(() => import('./vrm-avatar').then(m => m.VrmAvatar), {
   ssr: false,
   loading: () => <div className="w-[280px] h-[280px] flex items-center justify-center text-text-dim text-xs">загрузка 3D…</div>,
@@ -17,7 +18,7 @@ const VrmAvatar = dynamic(() => import('./vrm-avatar').then(m => m.VrmAvatar), {
 export function AvatarColumn() {
   const emotion = useChatStore(s => s.emotion);
   const isStreaming = useChatStore(s => s.isStreaming);
-  const [avatarMode, setAvatarMode] = useState<'2d' | '3d'>('3d');
+  const [avatarMode, setAvatarMode] = useState<'live2d' | '3d'>('3d');
   const [vrmSrc, setVrmSrc] = useState<string | undefined>(undefined);
 
   // Load avatar settings from API
@@ -25,8 +26,7 @@ export function AvatarColumn() {
     fetch('/api/settings')
       .then(res => res.json())
       .then(data => {
-        if (data.avatarMode === '2d') setAvatarMode('2d');
-        else setAvatarMode('3d');
+        setAvatarMode(data.avatarMode === 'live2d' ? 'live2d' : '3d');
         if (data.activeVrm) setVrmSrc(data.activeVrm);
       })
       .catch(() => { /* use defaults */ });
@@ -38,11 +38,11 @@ export function AvatarColumn() {
         {/* Avatar */}
         <div className="flex justify-center pt-2 pb-4 min-h-[200px] items-center">
           {avatarMode === '3d' ? (
-            <VrmErrorBoundary onError={() => setAvatarMode('2d')}>
+            <VrmErrorBoundary onError={() => setAvatarMode('live2d')}>
               <VrmAvatar emotion={emotion} speaking={isStreaming} size={280} src={vrmSrc} />
             </VrmErrorBoundary>
           ) : (
-            <AvatarSvg emotion={emotion} speaking={isStreaming} size={200} />
+            <Live2DAvatar emotion={emotion} speaking={isStreaming} size={280} />
           )}
         </div>
 

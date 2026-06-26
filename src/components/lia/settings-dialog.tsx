@@ -1,11 +1,12 @@
 'use client';
 
-// Settings dialog — все настройки Lia в одном окне.
+// Настройки Лии — все в одном окне, простым языком.
 //
 // Разделы:
-//   1. Ollama — URL, выбор модели диалога, выбор embed-модели
-//   2. Аватар — 2D/3D, выбор VRM файла, загрузка своего, скачивание sample
-//   3. О Lia — версия, ссылка на GitHub
+//   1. Языковая модель — какую модель Ollama использует Лия для разговора
+//   2. Внешний вид — выбор аватара (Live2D или 3D VRM), загрузка своих моделей
+//   3. Обучение — управление стилем общения Лии (бывший RL sidecar)
+//   4. О Лии — версия и краткое описание
 
 import { useEffect, useState, useRef } from 'react';
 import {
@@ -21,14 +22,17 @@ import { Label } from '@/components/ui/label';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import {
   Settings as SettingsIcon,
-  Server,
+  MessageSquare,
   User,
+  GraduationCap,
   Info,
   Check,
   Loader2,
   Upload,
   Download,
   AlertCircle,
+  Play,
+  Square,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
@@ -40,25 +44,42 @@ type Settings = {
   ollamaOk: boolean;
   ollamaError?: string;
   availableModels: string[];
-  availableEmbedModels: string[];
+  hasEmbedModel: boolean;
   vrmFiles: string[];
   activeVrm: string | null;
   avatarMode: string;
 };
 
+type RLStats = {
+  sidecar_ok: boolean;
+  sidecar_stats?: {
+    transitions_count: number;
+    model_versions: Array<{
+      version: number;
+      size_onnx_kb: number;
+      created_at: number;
+    }>;
+    active_version: number | null;
+  };
+  sidecar_error?: string;
+  local_experiences: number;
+};
+
 export function SettingsDialog() {
   const [open, setOpen] = useState(false);
   const [settings, setSettings] = useState<Settings | null>(null);
+  const [rlStats, setRlStats] = useState<RLStats | null>(null);
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [downloading, setDownloading] = useState(false);
+  const [training, setTraining] = useState(false);
+  const [startingEngine, setStartingEngine] = useState(false);
 
   // Form state
   const [baseUrl, setBaseUrl] = useState('');
   const [model, setModel] = useState('');
-  const [embedModel, setEmbedModel] = useState('');
-  const [avatarMode, setAvatarMode] = useState<'2d' | '3d'>('3d');
+  const [avatarMode, setAvatarMode] = useState<'live2d' | '3d'>('3d');
   const [activeVrm, setActiveVrm] = useState<string | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -66,15 +87,19 @@ export function SettingsDialog() {
   const refresh = async () => {
     setLoading(true);
     try {
-      const res = await fetch('/api/settings');
-      const data = await res.json();
-      setSettings(data);
-      setBaseUrl(data.baseUrl ?? '');
-      setModel(data.model ?? '');
-      setEmbedModel(data.embedModel ?? '');
-      setAvatarMode(data.avatarMode === '2d' ? '2d' : '3d');
-      setActiveVrm(data.activeVrm);
-    } catch (e) {
+      const [settingsRes, rlRes] = await Promise.all([
+        fetch('/api/settings'),
+        fetch('/api/rl/stats'),
+      ]);
+      const settingsData = await settingsRes.json();
+      const rlData = await rlRes.json();
+      setSettings(settingsData);
+      setRlStats(rlData);
+      setBaseUrl(settingsData.baseUrl ?? '');
+      setModel(settingsData.model ?? '');
+      setAvatarMode(settingsData.avatarMode === 'live2d' ? 'live2d' : '3d');
+      setActiveVrm(settingsData.activeVrm);
+    } catch {
       toast.error('Не удалось загрузить настройки');
     } finally {
       setLoading(false);
@@ -85,19 +110,19 @@ export function SettingsDialog() {
     if (open) refresh();
   }, [open]);
 
-  const saveOllama = async () => {
+  const saveModel = async () => {
     setSaving(true);
     try {
       const res = await fetch('/api/settings', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ baseUrl, model, embedModel }),
+        body: JSON.stringify({ baseUrl, model }),
       });
       if (!res.ok) throw new Error('Save failed');
-      toast.success('Настройки Ollama сохранены');
+      toast.success('Настройки модели сохранены');
       await refresh();
-    } catch (e) {
-      toast.error('Не удалось сохранить настройки');
+    } catch {
+      toast.error('Не удалось сохранить');
     } finally {
       setSaving(false);
     }
@@ -111,11 +136,10 @@ export function SettingsDialog() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ avatarMode, activeVrm }),
       });
-      toast.success('Настройки аватара сохранены');
-      // Force page reload to apply VRM change
+      toast.success('Настройки внешнего вида сохранены');
       window.location.reload();
-    } catch (e) {
-      toast.error('Не удалось сохранить настройки аватара');
+    } catch {
+      toast.error('Не удалось сохранить');
     } finally {
       setSaving(false);
     }
@@ -124,23 +148,14 @@ export function SettingsDialog() {
   const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
-
     setUploading(true);
     try {
       const formData = new FormData();
       formData.append('file', file);
-
-      const res = await fetch('/api/settings/upload-vrm', {
-        method: 'POST',
-        body: formData,
-      });
-
+      const res = await fetch('/api/settings/upload-vrm', { method: 'POST', body: formData });
       const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.error || 'Upload failed');
-      }
-
-      toast.success(`VRM загружен: ${data.filename} (${data.sizeMb} МБ)`);
+      if (!res.ok) throw new Error(data.error || 'Upload failed');
+      toast.success(`Модель загружена: ${data.filename}`);
       await refresh();
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'Загрузка не удалась');
@@ -155,15 +170,66 @@ export function SettingsDialog() {
     try {
       const res = await fetch('/api/settings/download-vrm', { method: 'POST' });
       const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.error || 'Download failed');
-      }
-      toast.success(data.alreadyExisted ? 'Sample VRM уже был скачан' : `Sample VRM скачан (${data.sizeMb} МБ)`);
+      if (!res.ok) throw new Error(data.error || 'Download failed');
+      toast.success(data.alreadyExisted ? 'Образец уже был скачан' : 'Образец модели скачан');
       await refresh();
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'Скачивание не удалось');
     } finally {
       setDownloading(false);
+    }
+  };
+
+  const startEngine = async () => {
+    setStartingEngine(true);
+    try {
+      const res = await fetch('/api/rl/start-engine', { method: 'POST' });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to start engine');
+      if (data.already_running) {
+        toast.success('Движок обучения уже запущен');
+      } else {
+        toast.success('Движок обучения запускается… (это займёт несколько секунд)');
+      }
+      // Wait a bit then refresh
+      setTimeout(() => refresh(), 3000);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Не удалось запустить движок');
+    } finally {
+      setStartingEngine(false);
+    }
+  };
+
+  const train = async () => {
+    setTraining(true);
+    try {
+      const res = await fetch('/api/rl/train', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ nEpochs: 10 }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Training failed');
+      toast.success(`Готово! Создан стиль общения v${data.result.version}`);
+      await refresh();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Обучение не удалось');
+    } finally {
+      setTraining(false);
+    }
+  };
+
+  const activateVersion = async (version: number) => {
+    try {
+      await fetch('/api/rl/activate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ version }),
+      });
+      toast.success(`Стиль общения v${version} активирован`);
+      await refresh();
+    } catch {
+      toast.error('Не удалось активировать');
     }
   };
 
@@ -177,7 +243,7 @@ export function SettingsDialog() {
           <SettingsIcon className="w-4 h-4" />
         </button>
       </DialogTrigger>
-      <DialogContent className="max-w-2xl bg-popover border-border">
+      <DialogContent className="max-w-2xl bg-popover border-border max-h-[85vh] overflow-y-auto">
         <DialogHeader>
           <DialogTitle>Настройки</DialogTitle>
         </DialogHeader>
@@ -189,25 +255,28 @@ export function SettingsDialog() {
         )}
 
         {settings && !loading && (
-          <Tabs defaultValue="ollama" className="w-full">
-            <TabsList className="grid grid-cols-3 mb-4">
-              <TabsTrigger value="ollama" className="text-xs">
-                <Server className="w-3 h-3 mr-1.5" />
-                Ollama
+          <Tabs defaultValue="model" className="w-full">
+            <TabsList className="grid grid-cols-4 mb-4">
+              <TabsTrigger value="model" className="text-xs">
+                <MessageSquare className="w-3 h-3 mr-1.5" />
+                Модель
               </TabsTrigger>
               <TabsTrigger value="avatar" className="text-xs">
                 <User className="w-3 h-3 mr-1.5" />
-                Аватар
+                Внешний вид
+              </TabsTrigger>
+              <TabsTrigger value="learning" className="text-xs">
+                <GraduationCap className="w-3 h-3 mr-1.5" />
+                Обучение
               </TabsTrigger>
               <TabsTrigger value="about" className="text-xs">
                 <Info className="w-3 h-3 mr-1.5" />
-                О Lia
+                О Лии
               </TabsTrigger>
             </TabsList>
 
-            {/* ── Ollama tab ── */}
-            <TabsContent value="ollama" className="space-y-4">
-              {/* Connection status */}
+            {/* ── Модель ── */}
+            <TabsContent value="model" className="space-y-4">
               <div className={cn(
                 'rounded-md border p-3 text-xs flex items-center gap-2',
                 settings.ollamaOk
@@ -220,14 +289,13 @@ export function SettingsDialog() {
                 )} />
                 <span className="flex-1">
                   {settings.ollamaOk
-                    ? `Ollama подключена · ${settings.availableModels.length} моделей доступно`
-                    : `Не удалось подключиться к Ollama${settings.ollamaError ? `: ${settings.ollamaError}` : ''}`}
+                    ? `Ollama подключена · доступно моделей: ${settings.availableModels.length}`
+                    : 'Не удалось подключиться к Ollama. Проверь, что программа запущена.'}
                 </span>
               </div>
 
-              {/* Base URL */}
               <div className="space-y-1.5">
-                <Label htmlFor="baseUrl" className="text-xs">URL Ollama</Label>
+                <Label htmlFor="baseUrl" className="text-xs">Адрес сервера Ollama</Label>
                 <Input
                   id="baseUrl"
                   value={baseUrl}
@@ -236,16 +304,15 @@ export function SettingsDialog() {
                   className="text-sm font-mono"
                 />
                 <p className="text-[10px] text-text-dim">
-                  По умолчанию Ollama слушает на http://127.0.0.1:11434
+                  Обычно Ollama работает на этом адресе по умолчанию
                 </p>
               </div>
 
-              {/* Dialog model */}
               <div className="space-y-1.5">
-                <Label className="text-xs">Модель диалога</Label>
+                <Label className="text-xs">Модель для разговора</Label>
                 {settings.availableModels.length === 0 ? (
                   <p className="text-xs text-text-dim">
-                    Нет доступных моделей. Запусти Ollama и скачай модель: <code className="font-mono">ollama pull qwen2.5:7b</code>
+                    Нет доступных моделей. Открой программу Ollama и скачай модель — например qwen2.5:7b
                   </p>
                 ) : (
                   <div className="grid grid-cols-2 gap-1.5 max-h-48 overflow-y-auto">
@@ -276,64 +343,39 @@ export function SettingsDialog() {
                 />
               </div>
 
-              {/* Embed model */}
-              <div className="space-y-1.5">
-                <Label className="text-xs">Embedding-модель (для памяти)</Label>
-                {settings.availableEmbedModels.length === 0 ? (
-                  <p className="text-xs text-text-dim">
-                    Нет embedding-моделей. Скачай: <code className="font-mono">ollama pull nomic-embed-text</code>
-                  </p>
-                ) : (
-                  <div className="grid grid-cols-1 gap-1">
-                    {settings.availableEmbedModels.map(m => (
-                      <button
-                        key={m}
-                        onClick={() => setEmbedModel(m)}
-                        className={cn(
-                          'text-left text-xs px-2 py-1.5 rounded border transition-colors',
-                          embedModel === m
-                            ? 'border-accent bg-accent/10 text-accent'
-                            : 'border-border hover:border-accent/50',
-                        )}
-                      >
-                        <div className="flex items-center justify-between gap-1">
-                          <span className="truncate font-mono">{m}</span>
-                          {embedModel === m && <Check className="w-3 h-3 shrink-0" />}
-                        </div>
-                      </button>
-                    ))}
-                  </div>
-                )}
-              </div>
+              {/* Подсказка про память */}
+              {!settings.hasEmbedModel && settings.ollamaOk && (
+                <div className="rounded border border-warning/40 bg-warning/5 p-2 text-[11px] text-warning flex items-start gap-2">
+                  <AlertCircle className="w-3.5 h-3.5 mt-0.5 shrink-0" />
+                  <span>
+                    Для долговременной памяти Лии нужна специальная модель (nomic-embed-text).
+                    Скачай её в программе Ollama, чтобы Лия запоминала ваши разговоры.
+                  </span>
+                </div>
+              )}
 
-              <Button
-                onClick={saveOllama}
-                disabled={saving}
-                className="w-full"
-                size="sm"
-              >
+              <Button onClick={saveModel} disabled={saving} className="w-full" size="sm">
                 {saving ? <Loader2 className="w-3 h-3 mr-1.5 animate-spin" /> : null}
-                Сохранить настройки Ollama
+                Сохранить
               </Button>
             </TabsContent>
 
-            {/* ── Avatar tab ── */}
+            {/* ── Внешний вид ── */}
             <TabsContent value="avatar" className="space-y-4">
-              {/* Mode: 2D / 3D */}
               <div className="space-y-1.5">
                 <Label className="text-xs">Тип аватара</Label>
                 <div className="grid grid-cols-2 gap-2">
                   <button
-                    onClick={() => setAvatarMode('2d')}
+                    onClick={() => setAvatarMode('live2d')}
                     className={cn(
                       'rounded-md border p-3 text-left transition-colors',
-                      avatarMode === '2d'
+                      avatarMode === 'live2d'
                         ? 'border-accent bg-accent/10'
                         : 'border-border hover:border-accent/50',
                     )}
                   >
-                    <div className="text-xs font-medium mb-0.5">2D SVG</div>
-                    <div className="text-[10px] text-text-dim">Лёгкий, быстрый, работает везде</div>
+                    <div className="text-xs font-medium mb-0.5">Live2D</div>
+                    <div className="text-[10px] text-text-dim">Анимированный 2D-аватар</div>
                   </button>
                   <button
                     onClick={() => setAvatarMode('3d')}
@@ -345,40 +387,35 @@ export function SettingsDialog() {
                     )}
                   >
                     <div className="text-xs font-medium mb-0.5">3D VRM</div>
-                    <div className="text-[10px] text-text-dim">Полноценный 3D-аватар с эмоциями</div>
+                    <div className="text-[10px] text-text-dim">Полноценная 3D-модель с эмоциями</div>
                   </button>
                 </div>
               </div>
 
-              {/* VRM model selection (only for 3D) */}
               {avatarMode === '3d' && (
                 <>
                   <div className="space-y-1.5">
-                    <Label className="text-xs">VRM-модель</Label>
+                    <Label className="text-xs">3D-модель персонажа</Label>
                     {settings.vrmFiles.length === 0 ? (
-                      <div className="rounded border border-warning/40 bg-warning/5 p-3 text-xs text-warning flex items-start gap-2">
-                        <AlertCircle className="w-3.5 h-3.5 mt-0.5 shrink-0" />
-                        <div className="flex-1">
-                          <p className="mb-2">Нет VRM-моделей. Можно:</p>
-                          <div className="flex gap-2">
-                            <button
-                              onClick={handleDownloadSample}
-                              disabled={downloading}
-                              className="flex items-center gap-1 px-2 py-1 rounded bg-accent/20 hover:bg-accent/30 text-accent transition-colors text-[11px]"
-                            >
-                              {downloading ? <Loader2 className="w-3 h-3 animate-spin" /> : <Download className="w-3 h-3" />}
-                              Скачать sample
-                            </button>
-                            <span className="text-text-dim text-[11px] self-center">или</span>
-                            <button
-                              onClick={() => fileInputRef.current?.click()}
-                              disabled={uploading}
-                              className="flex items-center gap-1 px-2 py-1 rounded bg-accent/20 hover:bg-accent/30 text-accent transition-colors text-[11px]"
-                            >
-                              {uploading ? <Loader2 className="w-3 h-3 animate-spin" /> : <Upload className="w-3 h-3" />}
-                              Загрузить свой
-                            </button>
-                          </div>
+                      <div className="rounded border border-warning/40 bg-warning/5 p-3 text-xs text-warning">
+                        <p className="mb-2">Нет 3D-моделей. Можно:</p>
+                        <div className="flex gap-2 flex-wrap">
+                          <button
+                            onClick={handleDownloadSample}
+                            disabled={downloading}
+                            className="flex items-center gap-1 px-2 py-1 rounded bg-accent/20 hover:bg-accent/30 text-accent transition-colors text-[11px]"
+                          >
+                            {downloading ? <Loader2 className="w-3 h-3 animate-spin" /> : <Download className="w-3 h-3" />}
+                            Скачать готовую
+                          </button>
+                          <button
+                            onClick={() => fileInputRef.current?.click()}
+                            disabled={uploading}
+                            className="flex items-center gap-1 px-2 py-1 rounded bg-accent/20 hover:bg-accent/30 text-accent transition-colors text-[11px]"
+                          >
+                            {uploading ? <Loader2 className="w-3 h-3 animate-spin" /> : <Upload className="w-3 h-3" />}
+                            Загрузить свою
+                          </button>
                         </div>
                       </div>
                     ) : (
@@ -418,7 +455,7 @@ export function SettingsDialog() {
                             className="flex items-center gap-1 px-2 py-1 rounded border border-border hover:border-accent/50 text-xs transition-colors"
                           >
                             {downloading ? <Loader2 className="w-3 h-3 animate-spin" /> : <Download className="w-3 h-3" />}
-                            Скачать sample
+                            Скачать готовую
                           </button>
                         </div>
                       </>
@@ -433,71 +470,167 @@ export function SettingsDialog() {
                   </div>
 
                   <div className="rounded border border-border bg-surface/50 p-2 text-[10px] text-text-dim">
-                    Создать свой VRM: <a href="https://vroid.com/en/studio" target="_blank" rel="noreferrer noopener" className="text-accent hover:underline">VRoid Studio</a> (бесплатно)
+                    Файл модели должен быть в формате .vrm. Создать свою модель можно в бесплатной программе VRoid Studio.
                   </div>
                 </>
               )}
 
-              <Button
-                onClick={saveAvatar}
-                disabled={saving}
-                className="w-full"
-                size="sm"
-              >
+              {avatarMode === 'live2d' && (
+                <div className="rounded border border-border bg-surface/50 p-2 text-[10px] text-text-dim">
+                  Live2D — это технология анимации 2D-изображений. Подходит, если 3D-модели нет или они слишком тяжёлые.
+                </div>
+              )}
+
+              <Button onClick={saveAvatar} disabled={saving} className="w-full" size="sm">
                 {saving ? <Loader2 className="w-3 h-3 mr-1.5 animate-spin" /> : null}
-                Сохранить настройки аватара
+                Сохранить
               </Button>
             </TabsContent>
 
-            {/* ── About tab ── */}
-            <TabsContent value="about" className="space-y-3">
-              <div className="rounded-md border border-border bg-surface/50 p-4 space-y-2">
-                <div className="flex items-center gap-2">
-                  <div className="w-8 h-8 rounded-md bg-accent flex items-center justify-center">
-                    <span className="text-sm font-bold text-white">Л</span>
-                  </div>
-                  <div>
-                    <div className="text-sm font-medium">Лия v2.0</div>
-                    <div className="text-[10px] text-text-dim">Personal AI Companion</div>
-                  </div>
-                </div>
-                <p className="text-xs text-muted-foreground leading-relaxed">
-                  Тёплый собеседник и помощник с собственным характером.
-                  Local-first: все данные остаются на твоей машине.
+            {/* ── Обучение ── */}
+            <TabsContent value="learning" className="space-y-4">
+              <div className="rounded-md border border-border bg-surface/50 p-3 text-xs leading-relaxed">
+                <p className="font-medium text-foreground mb-1">Что это такое?</p>
+                <p className="text-muted-foreground">
+                  Лия может учиться на твоих разговорах и подстраивать свой стиль общения:
+                  быть теплее или сдержаннее, задавать больше вопросов или давать развёрнутые ответы.
+                  Чем больше вы общаетесь — тем точнее Лия понимает, как тебе комфортнее.
                 </p>
-                <div className="flex gap-3 pt-2 text-[11px]">
-                  <a
-                    href="https://github.com/redbleach5/Lia-v2"
-                    target="_blank"
-                    rel="noreferrer noopener"
-                    className="text-accent hover:underline"
+              </div>
+
+              {/* Движок обучения status */}
+              <div className={cn(
+                'rounded-md border p-3 text-xs flex items-center gap-2',
+                rlStats?.sidecar_ok
+                  ? 'border-success/40 bg-success/5 text-success'
+                  : 'border-warning/40 bg-warning/5 text-warning',
+              )}>
+                <div className={cn(
+                  'w-2 h-2 rounded-full',
+                  rlStats?.sidecar_ok ? 'bg-success' : 'bg-warning',
+                )} />
+                <span className="flex-1">
+                  {rlStats?.sidecar_ok
+                    ? 'Движок обучения работает'
+                    : 'Движок обучения не запущен'}
+                </span>
+                {!rlStats?.sidecar_ok && (
+                  <button
+                    onClick={startEngine}
+                    disabled={startingEngine}
+                    className="flex items-center gap-1 px-2 py-1 rounded bg-accent/20 hover:bg-accent/30 text-accent transition-colors text-[11px]"
                   >
-                    GitHub репозиторий
-                  </a>
-                  <a
-                    href="https://vroid.com/en/studio"
-                    target="_blank"
-                    rel="noreferrer noopener"
-                    className="text-accent hover:underline"
-                  >
-                    VRoid Studio
-                  </a>
-                  <a
-                    href="https://ollama.com"
-                    target="_blank"
-                    rel="noreferrer noopener"
-                    className="text-accent hover:underline"
-                  >
-                    Ollama
-                  </a>
+                    {startingEngine ? <Loader2 className="w-3 h-3 animate-spin" /> : <Play className="w-3 h-3" />}
+                    Запустить
+                  </button>
+                )}
+              </div>
+
+              {/* Stats */}
+              <div className="grid grid-cols-2 gap-2 text-[11px]">
+                <div className="rounded border border-border bg-surface/50 p-2">
+                  <div className="text-text-dim">Разговоров записано</div>
+                  <div className="text-base font-mono text-foreground">
+                    {rlStats?.local_experiences ?? 0}
+                  </div>
+                  <div className="text-[10px] text-text-dim">нужно от 10 для обучения</div>
+                </div>
+                <div className="rounded border border-border bg-surface/50 p-2">
+                  <div className="text-text-dim">Стилей создано</div>
+                  <div className="text-base font-mono text-foreground">
+                    {rlStats?.sidecar_stats?.model_versions?.length ?? 0}
+                  </div>
                 </div>
               </div>
 
-              <div className="rounded-md border border-border bg-surface/50 p-3 text-[11px] text-muted-foreground leading-relaxed">
-                <div className="font-medium text-foreground mb-1">Технологии</div>
-                Next.js 16 · React 19 · TypeScript · Tailwind 4 · shadcn/ui ·
-                Prisma + SQLite + sqlite-vec · Vercel AI SDK v5 ·
-                three.js + @pixiv/three-vrm · Python + PyTorch (RL)
+              {/* Train button */}
+              <Button
+                onClick={train}
+                disabled={training || !rlStats?.sidecar_ok || (rlStats?.local_experiences ?? 0) < 10}
+                className="w-full"
+                size="sm"
+              >
+                {training ? <Loader2 className="w-3 h-3 mr-1.5 animate-spin" /> : <GraduationCap className="w-3 h-3 mr-1.5" />}
+                {training ? 'Учу…' : 'Обучить новый стиль'}
+              </Button>
+
+              {(rlStats?.local_experiences ?? 0) < 10 && (
+                <p className="text-[10px] text-text-dim text-center">
+                  Поговори с Лией ещё {(10 - (rlStats?.local_experiences ?? 0))} раз, чтобы накопить достаточно данных для обучения
+                </p>
+              )}
+
+              {/* Versions list */}
+              {rlStats?.sidecar_stats?.model_versions && rlStats.sidecar_stats.model_versions.length > 0 && (
+                <div className="space-y-1 mt-2">
+                  <div className="text-[10px] uppercase tracking-wider text-text-dim mb-1">
+                    Версии стиля общения
+                  </div>
+                  {rlStats.sidecar_stats.model_versions.map(m => {
+                    const isActive = m.version === rlStats.sidecar_stats?.active_version;
+                    return (
+                      <div
+                        key={m.version}
+                        className={cn(
+                          'rounded border p-2 text-[11px] flex items-center gap-2',
+                          isActive ? 'border-accent/40 bg-accent/5' : 'border-border bg-surface/50',
+                        )}
+                      >
+                        <span className="font-mono">v{m.version}</span>
+                        <span className="text-text-dim">
+                          {new Date(m.created_at * 1000).toLocaleString('ru-RU', {
+                            day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit',
+                          })}
+                        </span>
+                        {!isActive && (
+                          <button
+                            onClick={() => activateVersion(m.version)}
+                            className="ml-auto text-[10px] text-accent hover:text-accent/80 transition-colors"
+                          >
+                            включить
+                          </button>
+                        )}
+                        {isActive && (
+                          <span className="ml-auto text-[10px] text-accent flex items-center gap-1">
+                            <Check className="w-3 h-3" /> активна
+                          </span>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+
+              <div className="rounded border border-border bg-surface/50 p-2 text-[10px] text-text-dim leading-relaxed">
+                Обучение идёт на отдельном движке (Python) и не мешает разговору.
+                Обычно занимает 5-30 секунд. Новые версии можно включать и отключать —
+                если новый стиль не понравится, всегда можно вернуться к старому.
+              </div>
+            </TabsContent>
+
+            {/* ── О Лии ── */}
+            <TabsContent value="about" className="space-y-3">
+              <div className="rounded-md border border-border bg-surface/50 p-4 space-y-2">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-md bg-accent flex items-center justify-center">
+                    <span className="text-base font-bold text-white">Л</span>
+                  </div>
+                  <div>
+                    <div className="text-sm font-medium">Лия v2.0</div>
+                    <div className="text-[10px] text-text-dim">тёплый собеседник и помощник</div>
+                  </div>
+                </div>
+                <p className="text-xs text-muted-foreground leading-relaxed">
+                  Лия — это твой персональный ИИ-компаньон. Все разговоры остаются на твоём компьютере,
+                  ничего не отправляется в интернет. Лия умеет запоминать факты о тебе, искать информацию,
+                  сохранять файлы, и подстраивает свой стиль общения под тебя.
+                </p>
+              </div>
+
+              <div className="rounded-md border border-border bg-surface/50 p-3 text-[11px] text-muted-foreground">
+                <div className="font-medium text-foreground mb-1">Технические детали (для интересующихся)</div>
+                Основана на Next.js 16, React 19, Ollama, sqlite-vec. 3D-аватар через three-vrm.
+                Обучение через PyTorch. Полная документация и исходный код — в файле README.md проекта.
               </div>
             </TabsContent>
           </Tabs>

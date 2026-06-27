@@ -208,13 +208,16 @@ export function searchVectorsInEpisode(params: {
 
     if (rows.length === 0) return [];
 
-    // Fetch text + sourceType from VectorMemory for matched ids
+    // Fetch text + sourceType from VectorMemory for matched ids.
+    // Defence-in-depth: also filter by episodeId — even though vec_rowid_map
+    // already filtered by episode_id, this prevents any theoretical leak
+    // if vec_virtual/vec_rowid_map ever return ids from wrong episode.
     const ids = rows.map(r => r.id);
     const placeholders = ids.map(() => '?').join(',');
     const metaStmt = db.prepare(`
-      SELECT id, sourceType, text FROM VectorMemory WHERE id IN (${placeholders})
+      SELECT id, sourceType, text FROM VectorMemory WHERE id IN (${placeholders}) AND episodeId = ?
     `);
-    const metas = metaStmt.all(...ids) as Array<{ id: string; sourceType: string; text: string }>;
+    const metas = metaStmt.all(...ids, episodeId) as Array<{ id: string; sourceType: string; text: string }>;
     const metaMap = new Map(metas.map(m => [m.id, m]));
 
     return rows

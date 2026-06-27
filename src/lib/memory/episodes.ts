@@ -79,6 +79,18 @@ export async function renameEpisode(id: string, title: string): Promise<void> {
 }
 
 export async function deleteEpisode(id: string): Promise<void> {
+  // Clean raw-SQL vector index (vec_virtual + vec_rowid_map) BEFORE Prisma delete.
+  // Prisma cascade handles VectorMemory, EmotionalMemory, etc., but NOT the
+  // raw vec0 virtual table and mapping table (they're outside Prisma's schema).
+  try {
+    const { deleteVectorsInEpisode } = await import('@/lib/db-vec');
+    deleteVectorsInEpisode(id);
+  } catch (e) {
+    // Non-fatal — Prisma cascade will still clean VectorMemory rows,
+    // but vec_virtual/vec_rowid_map orphans may remain.
+    console.warn('[episodes] deleteVectorsInEpisode failed (non-fatal):', e);
+  }
+
   try {
     await db.episode.delete({ where: { id } });
   } catch (e: unknown) {

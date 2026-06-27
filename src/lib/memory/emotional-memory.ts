@@ -233,9 +233,12 @@ export async function recallEmotionalAnchors(params: {
     // Strip "emo:" prefix
     const anchorIds = rows.map(r => r.id.replace(/^emo:/, ''));
 
-    // Fetch from Prisma
+    // Fetch from Prisma.
+    // Defence-in-depth: also filter by episodeId — even though vec_rowid_map
+    // already filtered by episode_id, this prevents any theoretical leak
+    // if vec_virtual/vec_rowid_map ever return ids from wrong episode.
     const records = await db.emotionalMemory.findMany({
-      where: { id: { in: anchorIds } },
+      where: { id: { in: anchorIds }, episodeId },
     });
 
     // Build EmotionalAnchor array with decay

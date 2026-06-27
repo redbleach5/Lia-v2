@@ -1,5 +1,5 @@
-// GET  /api/settings — get Ollama settings + available models
-// POST /api/settings — update Ollama settings
+// GET  /api/settings — get Ollama settings + available models + avatar config
+// POST /api/settings — update Ollama settings + avatar config
 
 import { NextRequest, NextResponse } from 'next/server';
 import { getOllamaSettings, setOllamaSettings, checkOllamaHealth } from '@/lib/ollama';
@@ -7,6 +7,7 @@ import { db } from '@/lib/db';
 import { PATHS } from '@/lib/paths';
 import { existsSync, readdirSync } from 'fs';
 import path from 'path';
+import { DEFAULT_AVATAR_CONFIG, parseAvatarConfig, type AvatarConfig } from '@/lib/avatar-config';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -39,12 +40,20 @@ export async function GET() {
     avatarMode = row?.value ?? '3d';
   } catch { /* ignore */ }
 
+  // Avatar customization config (camera, platform, background, animation, body)
+  let avatarConfig: AvatarConfig = { ...DEFAULT_AVATAR_CONFIG };
+  try {
+    const row = await db.setting.findUnique({ where: { key: 'avatar_config' } });
+    if (row?.value) {
+      avatarConfig = parseAvatarConfig(row.value);
+    }
+  } catch { /* ignore */ }
+
   return NextResponse.json({
     ...settings,
     ollamaOk: health.ok,
     ollamaError: health.error,
     availableModels: health.models ?? [],
-    // Available embed models — user can choose, with descriptions
     availableEmbedModels: (health.models ?? []).filter(m =>
       m.startsWith('nomic-embed') ||
       m.startsWith('mxbai-embed') ||
@@ -56,6 +65,7 @@ export async function GET() {
     vrmFiles,
     activeVrm,
     avatarMode,
+    avatarConfig,
   });
 }
 
@@ -87,6 +97,19 @@ export async function POST(req: NextRequest) {
         where: { key: 'avatar_vrm_path' },
         create: { key: 'avatar_vrm_path', value: body.activeVrm },
         update: { value: body.activeVrm },
+      });
+    }
+
+    // Avatar customization config — full JSON blob
+    if (body.avatarConfig && typeof body.avatarConfig === 'object') {
+      const merged = parseAvatarConfig(JSON.stringify({
+        ...DEFAULT_AVATAR_CONFIG,
+        ...body.avatarConfig,
+      }));
+      await db.setting.upsert({
+        where: { key: 'avatar_config' },
+        create: { key: 'avatar_config', value: JSON.stringify(merged) },
+        update: { value: JSON.stringify(merged) },
       });
     }
 

@@ -6,19 +6,24 @@ import { Live2DAvatar } from './live2d-avatar';
 import { AgentPanel } from './agent-panel';
 import { RLPanel } from './rl-panel';
 import { CapabilityIndicator } from './capability-indicator';
-import { Sparkles, ChevronDown } from 'lucide-react';
+import { Sparkles, ChevronDown, Eye, EyeOff } from 'lucide-react';
 import { useState, useEffect, type ReactNode } from 'react';
 import dynamic from 'next/dynamic';
 import { dominantEmotion } from '@/lib/emotion';
 import { EMOTION_LABELS_RU, type EmotionAxis } from '@/lib/personality';
+import { DEFAULT_AVATAR_CONFIG, parseAvatarConfig, type AvatarConfig } from '@/lib/avatar-config';
 
 // VRM (3D) is heavy + needs browser APIs — load dynamically, no SSR
 const VrmAvatar = dynamic(() => import('./vrm-avatar').then(m => m.VrmAvatar), {
   ssr: false,
-  loading: () => <div className="w-[280px] h-[280px] flex items-center justify-center text-text-dim text-xs">загрузка 3D…</div>,
+  loading: () => (
+    <div className="w-full aspect-square flex items-center justify-center text-text-dim text-xs">
+      загрузка 3D…
+    </div>
+  ),
 });
 
-// Краткое текстовое описание текущей эмоции — рядом с аватаром
+// Краткое текстовое описание текущей эмоции
 const EMOTION_TEXT: Record<EmotionAxis, string> = {
   joy:        'радость',
   curiosity:  'любопытство',
@@ -32,15 +37,17 @@ export function AvatarColumn() {
   const isStreaming = useChatStore(s => s.isStreaming);
   const [avatarMode, setAvatarMode] = useState<'live2d' | '3d'>('3d');
   const [vrmSrc, setVrmSrc] = useState<string | undefined>(undefined);
+  const [avatarConfig, setAvatarConfig] = useState<AvatarConfig>(DEFAULT_AVATAR_CONFIG);
   const [emotionsExpanded, setEmotionsExpanded] = useState(false);
 
-  // Load avatar settings from API
+  // Load avatar settings + config from API
   useEffect(() => {
     fetch('/api/settings')
       .then(res => res.json())
       .then(data => {
         setAvatarMode(data.avatarMode === 'live2d' ? 'live2d' : '3d');
         if (data.activeVrm) setVrmSrc(data.activeVrm);
+        if (data.avatarConfig) setAvatarConfig(parseAvatarConfig(JSON.stringify(data.avatarConfig)));
       })
       .catch(() => { /* use defaults */ });
   }, []);
@@ -50,29 +57,51 @@ export function AvatarColumn() {
   const domValue = Math.round(emotion[dom] * 100);
 
   return (
-    <aside className="w-72 flex flex-col shrink-0 overflow-hidden">
-      <div className="flex-1 overflow-y-auto p-4 space-y-5">
-        {/* Avatar — стоит на платформе, цвет которой = текущая эмоция */}
-        <div className="flex justify-center pt-2 pb-2 min-h-[300px] items-end">
+    <aside className="w-80 flex flex-col shrink-0 overflow-hidden border-l border-border bg-surface/30">
+      {/* ── Сцена с аватаром ── */}
+      <div className="relative shrink-0 p-4 pb-2">
+        {/* Карточка-«сцена» — аватар стоит вписанный, а не «висящий» в пустоте */}
+        <div className="relative rounded-xl overflow-hidden border border-border bg-gradient-to-b from-surface to-surface-2/40 aspect-square">
           {avatarMode === '3d' ? (
             <VrmErrorBoundary onError={() => setAvatarMode('live2d')}>
-              <VrmAvatar emotion={emotion} speaking={isStreaming} size={280} src={vrmSrc} />
+              <div className="absolute inset-0">
+                <VrmAvatar
+                  emotion={emotion}
+                  speaking={isStreaming}
+                  size={288}
+                  src={vrmSrc}
+                  config={avatarConfig}
+                />
+              </div>
             </VrmErrorBoundary>
           ) : (
-            <Live2DAvatar emotion={emotion} speaking={isStreaming} size={280} />
+            <div className="absolute inset-0 flex items-center justify-center">
+              <Live2DAvatar emotion={emotion} speaking={isStreaming} size={280} />
+            </div>
+          )}
+
+          {/* Бейдж текущей эмоции — внизу карточки, как подпись к сцене */}
+          <div className="absolute bottom-2 left-2 right-2 flex items-center justify-between gap-2 px-2.5 py-1.5 rounded-md bg-surface/85 backdrop-blur-sm border border-border/60">
+            <span className="text-[10px] uppercase tracking-wider text-text-dim">
+              сейчас чувствует
+            </span>
+            <span className="text-xs font-medium text-foreground">{domLabel}</span>
+            <span className="text-[10px] font-mono text-text-dim">{domValue}%</span>
+          </div>
+
+          {/* Индикатор стриминга — верхний-правый угол */}
+          {isStreaming && (
+            <div className="absolute top-2 right-2 flex items-center gap-1 px-2 py-0.5 rounded-full bg-accent/15 border border-accent/30">
+              <span className="w-1.5 h-1.5 rounded-full bg-accent animate-pulse" />
+              <span className="text-[10px] text-accent font-medium">говорит</span>
+            </div>
           )}
         </div>
+      </div>
 
-        {/* Текущая эмоция — короткая подпись под аватаром */}
-        <div className="flex items-center justify-center gap-2 -mt-2">
-          <span className="text-[10px] uppercase tracking-wider text-text-dim">
-            сейчас чувствует:
-          </span>
-          <span className="text-xs font-medium text-foreground">{domLabel}</span>
-          <span className="text-[10px] font-mono text-text-dim">{domValue}%</span>
-        </div>
-
-        {/* Подробные эмоции — сворачиваемый блок (по умолчанию свёрнут, чтобы не дублировать платформу) */}
+      {/* ── Информационные блоки (скроллящиеся) ── */}
+      <div className="flex-1 overflow-y-auto px-4 pb-4 space-y-4">
+        {/* Подробные эмоции — сворачиваемый блок */}
         <div>
           <button
             onClick={() => setEmotionsExpanded(v => !v)}
@@ -82,6 +111,10 @@ export function AvatarColumn() {
             <h3 className="text-xs font-medium uppercase tracking-wider text-muted-foreground flex-1 text-left">
               Эмоции
             </h3>
+            {emotionsExpanded
+              ? <EyeOff className="w-3.5 h-3.5 text-text-dim" />
+              : <Eye className="w-3.5 h-3.5 text-text-dim" />
+            }
             <ChevronDown
               className={`w-3.5 h-3.5 text-text-dim transition-transform ${emotionsExpanded ? 'rotate-180' : ''}`}
             />

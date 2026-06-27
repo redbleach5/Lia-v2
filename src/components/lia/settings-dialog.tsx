@@ -20,6 +20,8 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Slider } from '@/components/ui/slider';
+import { Switch } from '@/components/ui/switch';
 import {
   Settings as SettingsIcon,
   MessageSquare,
@@ -33,9 +35,20 @@ import {
   AlertCircle,
   Play,
   Square,
+  RotateCcw,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { toast } from 'sonner';
+import {
+  DEFAULT_AVATAR_CONFIG,
+  parseAvatarConfig,
+  type AvatarConfig,
+  type CameraPreset,
+  type PlatformStyle,
+  type BackgroundStyle,
+  type LightingPreset,
+  type ArmPose,
+} from '@/lib/avatar-config';
 
 type Settings = {
   baseUrl: string;
@@ -48,6 +61,7 @@ type Settings = {
   vrmFiles: string[];
   activeVrm: string | null;
   avatarMode: string;
+  avatarConfig: AvatarConfig;
 };
 
 type RLStats = {
@@ -82,6 +96,7 @@ export function SettingsDialog() {
   const [embedModel, setEmbedModel] = useState('auto');
   const [avatarMode, setAvatarMode] = useState<'live2d' | '3d'>('3d');
   const [activeVrm, setActiveVrm] = useState<string | null>(null);
+  const [avatarConfig, setAvatarConfig] = useState<AvatarConfig>(DEFAULT_AVATAR_CONFIG);
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -101,6 +116,9 @@ export function SettingsDialog() {
       setEmbedModel(settingsData.embedModel ?? 'auto');
       setAvatarMode(settingsData.avatarMode === 'live2d' ? 'live2d' : '3d');
       setActiveVrm(settingsData.activeVrm);
+      setAvatarConfig(settingsData.avatarConfig
+        ? parseAvatarConfig(JSON.stringify(settingsData.avatarConfig))
+        : DEFAULT_AVATAR_CONFIG);
     } catch {
       toast.error('Не удалось загрузить настройки');
     } finally {
@@ -141,7 +159,7 @@ export function SettingsDialog() {
       await fetch('/api/settings', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ avatarMode, activeVrm }),
+        body: JSON.stringify({ avatarMode, activeVrm, avatarConfig }),
       });
       toast.success('Настройки внешнего вида сохранены');
       window.location.reload();
@@ -150,6 +168,16 @@ export function SettingsDialog() {
     } finally {
       setSaving(false);
     }
+  };
+
+  const resetAvatarConfig = () => {
+    setAvatarConfig({ ...DEFAULT_AVATAR_CONFIG });
+    toast.info('Сброшено к значениям по умолчанию. Не забудь сохранить.');
+  };
+
+  // Partial updater — shallow-merges a section of the config
+  const updateConfig = <K extends keyof AvatarConfig>(section: K, patch: Partial<AvatarConfig[K]>) => {
+    setAvatarConfig(prev => ({ ...prev, [section]: { ...prev[section], ...patch } }));
   };
 
   const handleUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -439,6 +467,7 @@ export function SettingsDialog() {
 
             {/* ── Внешний вид ── */}
             <TabsContent value="avatar" className="space-y-4">
+              {/* Тип аватара */}
               <div className="space-y-1.5">
                 <Label className="text-xs">Тип аватара</Label>
                 <div className="grid grid-cols-2 gap-2">
@@ -471,6 +500,7 @@ export function SettingsDialog() {
 
               {avatarMode === '3d' && (
                 <>
+                  {/* Выбор 3D-модели */}
                   <div className="space-y-1.5">
                     <Label className="text-xs">3D-модель персонажа</Label>
                     {settings.vrmFiles.length === 0 ? (
@@ -548,6 +578,300 @@ export function SettingsDialog() {
 
                   <div className="rounded border border-border bg-surface/50 p-2 text-[10px] text-text-dim">
                     Файл модели должен быть в формате .vrm. Создать свою модель можно в бесплатной программе VRoid Studio.
+                  </div>
+
+                  {/* ── Кастомизация аватара ── */}
+                  <div className="flex items-center justify-between pt-2">
+                    <Label className="text-xs font-medium">Тонкая настройка аватара</Label>
+                    <button
+                      onClick={resetAvatarConfig}
+                      className="flex items-center gap-1 text-[10px] text-text-dim hover:text-foreground transition-colors"
+                      title="Сбросить к значениям по умолчанию"
+                    >
+                      <RotateCcw className="w-3 h-3" />
+                      Сбросить
+                    </button>
+                  </div>
+
+                  {/* Камера */}
+                  <div className="rounded-md border border-border bg-surface/40 p-3 space-y-2.5">
+                    <div className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+                      Камера
+                    </div>
+                    <div className="grid grid-cols-4 gap-1.5">
+                      {([
+                        ['portrait', 'По грудь'],
+                        ['fullbody', 'В полный рост'],
+                        ['closeup', 'Крупный план'],
+                        ['custom', 'Своя'],
+                      ] as Array<[CameraPreset, string]>).map(([id, label]) => (
+                        <button
+                          key={id}
+                          onClick={() => updateConfig('camera', { preset: id })}
+                          className={cn(
+                            'text-[10px] px-2 py-1.5 rounded border transition-colors',
+                            avatarConfig.camera.preset === id
+                              ? 'border-accent bg-accent/10 text-accent'
+                              : 'border-border hover:border-accent/50',
+                          )}
+                        >
+                          {label}
+                        </button>
+                      ))}
+                    </div>
+                    {avatarConfig.camera.preset === 'custom' && (
+                      <div className="grid grid-cols-3 gap-2 pt-1">
+                        <LabelBlock label="Угол обзора (°)">
+                          <Slider
+                            value={[avatarConfig.camera.fov]}
+                            min={20}
+                            max={65}
+                            step={1}
+                            onValueChange={([v]) => updateConfig('camera', { fov: v })}
+                          />
+                          <span className="text-[10px] text-text-dim font-mono">{avatarConfig.camera.fov}°</span>
+                        </LabelBlock>
+                      </div>
+                    )}
+                    <p className="text-[10px] text-text-dim">
+                      Колесо мыши над аватаром меняет зум, перетаскивание — поворот.
+                      Пресеты задают стартовую позицию.
+                    </p>
+                  </div>
+
+                  {/* Платформа */}
+                  <div className="rounded-md border border-border bg-surface/40 p-3 space-y-2.5">
+                    <div className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+                      Платформа
+                    </div>
+                    <div className="grid grid-cols-4 gap-1.5">
+                      {([
+                        ['classic', 'Классическая'],
+                        ['minimal', 'Минимал'],
+                        ['glow', 'Свечение'],
+                        ['off', 'Без платформы'],
+                      ] as Array<[PlatformStyle, string]>).map(([id, label]) => (
+                        <button
+                          key={id}
+                          onClick={() => updateConfig('platform', { style: id })}
+                          className={cn(
+                            'text-[10px] px-2 py-1.5 rounded border transition-colors',
+                            avatarConfig.platform.style === id
+                              ? 'border-accent bg-accent/10 text-accent'
+                              : 'border-border hover:border-accent/50',
+                          )}
+                        >
+                          {label}
+                        </button>
+                      ))}
+                    </div>
+
+                    {avatarConfig.platform.style !== 'off' && (
+                      <>
+                        <LabelBlock label={`Радиус диска: ${avatarConfig.platform.radius.toFixed(2)}`}>
+                          <Slider
+                            value={[avatarConfig.platform.radius]}
+                            min={0.25}
+                            max={0.6}
+                            step={0.01}
+                            onValueChange={([v]) => updateConfig('platform', { radius: v })}
+                          />
+                        </LabelBlock>
+                        <LabelBlock label={`Непрозрачность: ${Math.round(avatarConfig.platform.opacity * 100)}%`}>
+                          <Slider
+                            value={[avatarConfig.platform.opacity]}
+                            min={0.3}
+                            max={1}
+                            step={0.05}
+                            onValueChange={([v]) => updateConfig('platform', { opacity: v })}
+                          />
+                        </LabelBlock>
+                        <div className="space-y-1.5 pt-1">
+                          <ToggleRow
+                            label="Внутреннее кольцо"
+                            checked={avatarConfig.platform.showInnerRing}
+                            onChange={v => updateConfig('platform', { showInnerRing: v })}
+                          />
+                          <ToggleRow
+                            label="Свечение под платформой"
+                            checked={avatarConfig.platform.showHalo}
+                            onChange={v => updateConfig('platform', { showHalo: v })}
+                          />
+                          <ToggleRow
+                            label="Пульсация в такт эмоции"
+                            checked={avatarConfig.platform.pulse}
+                            onChange={v => updateConfig('platform', { pulse: v })}
+                          />
+                        </div>
+                      </>
+                    )}
+                  </div>
+
+                  {/* Фон */}
+                  <div className="rounded-md border border-border bg-surface/40 p-3 space-y-2.5">
+                    <div className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+                      Фон сцены
+                    </div>
+                    <div className="grid grid-cols-4 gap-1.5">
+                      {([
+                        ['transparent', 'Прозрачный'],
+                        ['solid', 'Заливка'],
+                        ['gradient', 'Градиент'],
+                        ['radial', 'Радиал'],
+                      ] as Array<[BackgroundStyle, string]>).map(([id, label]) => (
+                        <button
+                          key={id}
+                          onClick={() => updateConfig('background', { style: id })}
+                          className={cn(
+                            'text-[10px] px-2 py-1.5 rounded border transition-colors',
+                            avatarConfig.background.style === id
+                              ? 'border-accent bg-accent/10 text-accent'
+                              : 'border-border hover:border-accent/50',
+                          )}
+                        >
+                          {label}
+                        </button>
+                      ))}
+                    </div>
+                    {avatarConfig.background.style !== 'transparent' && (
+                      <div className="grid grid-cols-2 gap-2 pt-1">
+                        <LabelBlock label="Цвет центра">
+                          <Input
+                            type="color"
+                            value={avatarConfig.background.color}
+                            onChange={e => updateConfig('background', { color: e.target.value })}
+                            className="h-8 p-1 cursor-pointer"
+                          />
+                        </LabelBlock>
+                        {(avatarConfig.background.style === 'gradient' || avatarConfig.background.style === 'radial') && (
+                          <LabelBlock label="Цвет краёв">
+                            <Input
+                              type="color"
+                              value={avatarConfig.background.edgeColor}
+                              onChange={e => updateConfig('background', { edgeColor: e.target.value })}
+                              className="h-8 p-1 cursor-pointer"
+                            />
+                          </LabelBlock>
+                        )}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Освещение */}
+                  <div className="rounded-md border border-border bg-surface/40 p-3 space-y-2.5">
+                    <div className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+                      Освещение
+                    </div>
+                    <div className="grid grid-cols-5 gap-1.5">
+                      {([
+                        ['warm', 'Тёплое'],
+                        ['cool', 'Холодное'],
+                        ['neutral', 'Нейтральное'],
+                        ['soft', 'Мягкое'],
+                        ['dramatic', 'Драма'],
+                      ] as Array<[LightingPreset, string]>).map(([id, label]) => (
+                        <button
+                          key={id}
+                          onClick={() => updateConfig('lighting', { preset: id })}
+                          className={cn(
+                            'text-[10px] px-1 py-1.5 rounded border transition-colors',
+                            avatarConfig.lighting.preset === id
+                              ? 'border-accent bg-accent/10 text-accent'
+                              : 'border-border hover:border-accent/50',
+                          )}
+                        >
+                          {label}
+                        </button>
+                      ))}
+                    </div>
+                    <LabelBlock label={`Яркость: ${Math.round(avatarConfig.lighting.intensity * 100)}%`}>
+                      <Slider
+                        value={[avatarConfig.lighting.intensity]}
+                        min={0.4}
+                        max={1.6}
+                        step={0.05}
+                        onValueChange={([v]) => updateConfig('lighting', { intensity: v })}
+                      />
+                    </LabelBlock>
+                  </div>
+
+                  {/* Тело и поза */}
+                  <div className="rounded-md border border-border bg-surface/40 p-3 space-y-2.5">
+                    <div className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+                      Тело и поза
+                    </div>
+                    <div className="grid grid-cols-5 gap-1.5">
+                      {([
+                        ['natural', 'Естеств.'],
+                        ['relaxed', 'Расслабл.'],
+                        ['crossed', 'Скрещен.'],
+                        ['hands-pockets', 'В карманах'],
+                        ['t-pose', 'T-pose'],
+                      ] as Array<[ArmPose, string]>).map(([id, label]) => (
+                        <button
+                          key={id}
+                          onClick={() => updateConfig('body', { armPose: id })}
+                          className={cn(
+                            'text-[10px] px-1 py-1.5 rounded border transition-colors',
+                            avatarConfig.body.armPose === id
+                              ? 'border-accent bg-accent/10 text-accent'
+                              : 'border-border hover:border-accent/50',
+                          )}
+                        >
+                          {label}
+                        </button>
+                      ))}
+                    </div>
+                    <LabelBlock label={`Масштаб: ${avatarConfig.body.scale.toFixed(2)}×`}>
+                      <Slider
+                        value={[avatarConfig.body.scale]}
+                        min={0.8}
+                        max={1.2}
+                        step={0.01}
+                        onValueChange={([v]) => updateConfig('body', { scale: v })}
+                      />
+                    </LabelBlock>
+                    <LabelBlock label={`Смещение по Y: ${avatarConfig.body.yOffset.toFixed(2)}`}>
+                      <Slider
+                        value={[avatarConfig.body.yOffset]}
+                        min={-0.15}
+                        max={0.15}
+                        step={0.01}
+                        onValueChange={([v]) => updateConfig('body', { yOffset: v })}
+                      />
+                    </LabelBlock>
+                  </div>
+
+                  {/* Анимации */}
+                  <div className="rounded-md border border-border bg-surface/40 p-3 space-y-1.5">
+                    <div className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground mb-1">
+                      Анимации
+                    </div>
+                    <ToggleRow
+                      label="Дыхание"
+                      checked={avatarConfig.animation.breathing}
+                      onChange={v => updateConfig('animation', { breathing: v })}
+                    />
+                    <ToggleRow
+                      label="Моргание"
+                      checked={avatarConfig.animation.blinking}
+                      onChange={v => updateConfig('animation', { blinking: v })}
+                    />
+                    <ToggleRow
+                      label="Покачивание головой"
+                      checked={avatarConfig.animation.headSway}
+                      onChange={v => updateConfig('animation', { headSway: v })}
+                    />
+                    <ToggleRow
+                      label="Липсинк при ответе"
+                      checked={avatarConfig.animation.lipSync}
+                      onChange={v => updateConfig('animation', { lipSync: v })}
+                    />
+                    <ToggleRow
+                      label="Плавная смена эмоций"
+                      checked={avatarConfig.animation.emotionMorph}
+                      onChange={v => updateConfig('animation', { emotionMorph: v })}
+                    />
                   </div>
                 </>
               )}
@@ -742,3 +1066,34 @@ function describeEmbedModel(modelName: string): string {
   }
   return 'Embedding-модель — используется для запоминания смысла текстов.';
 }
+
+// ============================================================================
+// Avatar customization helpers — LabelBlock (поле с подписью и контентом)
+// и ToggleRow (строка с подписью и Switch)
+// ============================================================================
+function LabelBlock({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="space-y-1">
+      <div className="text-[10px] text-muted-foreground">{label}</div>
+      {children}
+    </div>
+  );
+}
+
+function ToggleRow({
+  label,
+  checked,
+  onChange,
+}: {
+  label: string;
+  checked: boolean;
+  onChange: (v: boolean) => void;
+}) {
+  return (
+    <div className="flex items-center justify-between py-1">
+      <span className="text-xs text-foreground">{label}</span>
+      <Switch checked={checked} onCheckedChange={onChange} />
+    </div>
+  );
+}
+

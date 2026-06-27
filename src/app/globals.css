@@ -59,55 +59,55 @@
 :root {
   --radius: 0.5rem;
 
-  /* Surfaces — тёплый off-white, не чисто белый */
-  --background: #faf8f5;
-  --surface: #f3efe8;
-  --surface-2: #eae4d9;
+  /* Surfaces — чистые, не бежевые */
+  --background: #fafafa;
+  --surface: #ffffff;
+  --surface-2: #f4f4f5;
 
   /* Text */
-  --foreground: #2d2823;
-  --muted-foreground: #6b635a;
-  --text-dim: #a89f95;
+  --foreground: #1a1a1a;
+  --muted-foreground: #6b6b6b;
+  --text-dim: #a0a0a0;
 
-  /* Accent — тёплый карий / тауп (на светлом фоне бежевый слишком бледный) */
+  /* Accent — тёплый карий, только как акцент */
   --primary: #8b6f47;
-  --primary-foreground: #faf8f5;
+  --primary-foreground: #ffffff;
   --accent: #8b6f47;
-  --accent-foreground: #faf8f5;
+  --accent-foreground: #ffffff;
 
-  /* Secondary — тауп */
+  /* Secondary — нейтральный серый */
   --taupe: #c9a886;
-  --secondary: #eae4d9;
-  --secondary-foreground: #2d2823;
+  --secondary: #f4f4f5;
+  --secondary-foreground: #1a1a1a;
 
-  /* Borders — тёплые, еле заметные */
-  --border: rgba(139, 111, 71, 0.15);
-  --input: rgba(139, 111, 71, 0.2);
-  --ring: #c9a886;
+  /* Borders — нейтральные, лёгкие */
+  --border: #e4e4e7;
+  --input: #e4e4e7;
+  --ring: #8b6f47;
 
-  /* Cards / popovers */
+  /* Cards / popovers — белые */
   --card: #ffffff;
-  --card-foreground: #2d2823;
+  --card-foreground: #1a1a1a;
   --popover: #ffffff;
-  --popover-foreground: #2d2823;
+  --popover-foreground: #1a1a1a;
 
   /* Muted */
-  --muted: #eae4d9;
+  --muted: #f4f4f5;
 
-  /* Status — тёплые, не кислотные */
+  /* Status */
   --destructive: #c2664a;
   --success: #6b8e5a;
   --warning: #c9a886;
 
-  /* Sidebar */
-  --sidebar: #f3efe8;
-  --sidebar-foreground: #2d2823;
+  /* Sidebar — чуть теплее основного фона, но не бежевый */
+  --sidebar: #fafafa;
+  --sidebar-foreground: #1a1a1a;
   --sidebar-primary: #8b6f47;
-  --sidebar-primary-foreground: #faf8f5;
-  --sidebar-accent: #eae4d9;
-  --sidebar-accent-foreground: #2d2823;
-  --sidebar-border: rgba(139, 111, 71, 0.15);
-  --sidebar-ring: #c9a886;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #f4f4f5;
+  --sidebar-accent-foreground: #1a1a1a;
+  --sidebar-border: #e4e4e7;
+  --sidebar-ring: #8b6f47;
 
   /* Charts */
   --chart-1: #8b6f47;

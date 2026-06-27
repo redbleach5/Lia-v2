@@ -155,11 +155,11 @@ function Scene({
         enablePan={false}
         enableZoom={true}
         minDistance={0.6}
-        maxDistance={2.0}
-        minPolarAngle={Math.PI / 4}
-        maxPolarAngle={Math.PI / 2.05}
-        minAzimuthAngle={-Math.PI / 6}
-        maxAzimuthAngle={Math.PI / 6}
+        maxDistance={4.0}
+        minPolarAngle={Math.PI / 6}
+        maxPolarAngle={Math.PI / 2.02}
+        minAzimuthAngle={-Math.PI / 5}
+        maxAzimuthAngle={Math.PI / 5}
         enableDamping
         dampingFactor={0.08}
       />
@@ -324,6 +324,13 @@ function VrmModel({
         // VRM смотрит в -Z по спецификации, камера на +Z — аватар уже лицом к нам.
         vrm.scene.rotation.y = 0;
 
+        // Сбрасываем все морф-таргеты в 0 при загрузке.
+        // Без этого некоторые модели могут загружаться с ненулевыми весами (особенно 'aa' или
+        // 'neutral'), что выглядит как постоянно открытый рот или застывшее выражение.
+        if (vrm.expressionManager) {
+          vrm.expressionManager.resetValues();
+        }
+
         // Применяем выбранную позу рук
         const pose = ARM_POSES[config.body.armPose];
         if (vrm.humanoid) {
@@ -373,7 +380,8 @@ function VrmModel({
     isBlinking: false,
     blinkPhase: 0,
     mouthPhase: 0,
-    current: { happy: 0, angry: 0, sad: 0, relaxed: 0, surprised: 0, aa: 0 },
+    mouthValue: 0, // текущее значение липсинка (0..0.6), отдельное от эмоций
+    current: { happy: 0, angry: 0, sad: 0, relaxed: 0, surprised: 0 },
   });
 
   useFrame((_, delta) => {
@@ -418,11 +426,13 @@ function VrmModel({
       }
     }
 
-    // Эмоции — плавная интерполяция к целевым blendshapes
+    // Эмоции — плавная интерполяция к целевым blendshapes.
+    // 'aa' намеренно отсутствует в этом цикле — он управляется липсинком ниже.
     if (config.animation.emotionMorph) {
       const target = emotionToBlendshapes(emotion);
       const lerp = 1 - Math.pow(0.001, delta);
       for (const key of Object.keys(target) as Array<keyof typeof target>) {
+        if (key === 'aa') continue; // липсинк управляет 'aa' отдельно
         const cur = animState.current.current[key] as number;
         const tgt = target[key];
         animState.current.current[key] = cur + (tgt - cur) * lerp;
@@ -430,16 +440,18 @@ function VrmModel({
       }
     }
 
-    // Липсинк во время стриминга
+    // Липсинк — управляет ТОЛЬКО 'aa'.
+    // Когда speaking=true: синусоидальное движение рта (имитация речи).
+    // Когда speaking=false: плавное затухание к 0 (закрытый рот).
     if (config.animation.lipSync && speaking) {
       animState.current.mouthPhase += delta * 12;
-      const mouth = (Math.sin(animState.current.mouthPhase) + 1) / 2 * 0.6;
-      setExpr(vrm, 'aa', Math.max(animState.current.current.aa ?? 0, mouth));
+      const target = (Math.sin(animState.current.mouthPhase) + 1) / 2 * 0.5;
+      animState.current.mouthValue = THREE.MathUtils.lerp(animState.current.mouthValue, target, 0.3);
     } else {
-      const cur = animState.current.current.aa ?? 0;
-      animState.current.current.aa = Math.max(0, cur - delta * 3);
-      setExpr(vrm, 'aa', animState.current.current.aa);
+      // Плавно закрываем рот со скоростью ~0.5 сек на полное закрытие
+      animState.current.mouthValue = Math.max(0, animState.current.mouthValue - delta * 2);
     }
+    setExpr(vrm, 'aa', animState.current.mouthValue);
 
     vrm.update(delta);
   });
@@ -466,12 +478,21 @@ function setExpr(vrm: VRM, name: VRMExpressionPresetName | string, value: number
 }
 
 function emotionToBlendshapes(e: EmotionVector): Record<string, number> {
+  // Консервативный маппинг 5-осевой эмоции в VRM blendshapes.
+  //
+  // ВАЖНО: не используем 'surprised' для curiosity — surprised сильно открывает рот
+  // и создаёт эффект «постоянно удивлённого» лица при базовой curiosity=0.75.
+  // Любопытство выражается лёгким поднятием бровей (через небольшое 'happy') и
+  // спокойным взглядом — без изменения формы рта.
+  //
+  // 'aa' здесь НЕ трогается вообще — он управляется исключительно липсинком
+  // (когда speaking=true) и плавно затухает к 0 в остальных случаях.
   return {
-    happy:     Math.max(0, e.joy - 0.3) * 1.2,
-    angry:     Math.max(0, e.irritation - 0.2) * 1.5,
-    sad:       Math.max(0, e.sadness - 0.2) * 1.3,
-    relaxed:   Math.max(0, e.calm - 0.3) * 0.8,
-    surprised: Math.max(0, e.curiosity - 0.5) * 1.5,
-    aa: 0,
+    happy:     Math.max(0, e.joy - 0.4) * 1.0,        // улыбка при joy > 0.4
+    angry:     Math.max(0, e.irritation - 0.35) * 1.2, // нахмуренность при раздражении
+    sad:       Math.max(0, e.sadness - 0.3) * 1.1,     // опущенные уголки рта при грусти
+    relaxed:   Math.max(0, e.calm - 0.5) * 0.7,        // мягкое расслабление при спокойствии
+    surprised: 0,                                       // НЕ используем — открывает рот
+    aa: 0,                                              // управляется липсинком, не эмоциями
   };
 }

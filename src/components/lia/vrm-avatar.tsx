@@ -11,11 +11,11 @@ import { dominantEmotion } from '@/lib/emotion';
 import {
   DEFAULT_AVATAR_CONFIG,
   LIGHTING_PRESETS,
-  ARM_POSES,
   CAMERA_PRESETS,
   type AvatarConfig,
   type PlatformShape,
   type RingAnimation,
+  type ArmPose,
 } from '@/lib/avatar-config';
 
 export type VrmAvatarProps = {
@@ -26,7 +26,7 @@ export type VrmAvatarProps = {
   config?: AvatarConfig;
 };
 
-const DEFAULT_VRM_SRC = '/models/sample.vrm';
+const DEFAULT_VRM_SRC = '/models/Lia.vrm';
 
 // ============================================================================
 // Эмоция → цвет платформы
@@ -162,6 +162,84 @@ function Scene({
       />
     </>
   );
+}
+
+// ============================================================================
+// Arm pose presets → quaternions.
+//
+// Используем THREE.Quaternion.setFromEuler для каждого сустава, чтобы избежать
+// проблем с порядком Euler XYZ (который в VRM normalized bones даёт непредсказуемые
+// результаты при комбинировании X+Y+Z вращений). Quaternion — однозначное
+// представление旋转, порядок не важен.
+//
+// Все углы подобраны визуально на модели Lia.vrm (высота 1.666m).
+// ============================================================================
+export const ARM_POSE_QUATERNIONS: Record<ArmPose, {
+  leftUpperArm: [number, number, number];   // Euler XYZ в радианах
+  rightUpperArm: [number, number, number];
+  leftLowerArm: [number, number, number];
+  rightLowerArm: [number, number, number];
+  leftHand: [number, number, number];
+  rightHand: [number, number, number];
+}> = {
+  // Естественная поза — руки опущены вдоль тела.
+  // X=0.05 — лёгкий наклон вперёд, Z=-1.35 — опустить вдоль тела.
+  natural: {
+    leftUpperArm:  [0.05, 0, -1.35],
+    rightUpperArm: [0.05, 0, 1.35],
+    leftLowerArm:  [-0.25, 0, 0],
+    rightLowerArm: [-0.25, 0, 0],
+    leftHand:  [0, 0, 0.15],
+    rightHand: [0, 0, -0.15],
+  },
+  // Расслабленная — локти согнуты больше, кисти ближе к бёдрам.
+  relaxed: {
+    leftUpperArm:  [0.10, 0, -1.15],
+    rightUpperArm: [0.10, 0, 1.15],
+    leftLowerArm:  [-0.55, 0.05, 0],
+    rightLowerArm: [-0.55, -0.05, 0],
+    leftHand:  [0, 0, 0.20],
+    rightHand: [0, 0, -0.20],
+  },
+  // T-pose — руки строго в стороны.
+  't-pose': {
+    leftUpperArm:  [0, 0, 0],
+    rightUpperArm: [0, 0, 0],
+    leftLowerArm:  [0, 0, 0],
+    rightLowerArm: [0, 0, 0],
+    leftHand:  [0, 0, 0],
+    rightHand: [0, 0, 0],
+  },
+  // Скрещённые на груди.
+  // Анатомия VRM 1.0 (проверено визуально итеративно):
+  //   upperArm.X ≈ +1.3 → поднимает руку вперёд к горизонтали
+  //   upperArm.Z ≈ ∓0.4 → прижимает плечевую кость к корпусу
+  //   lowerArm.X ≈ -1.6 → сгибает локоть (negative = кисть к плечу)
+  //   lowerArm.Z ≈ ±0.6 → отводит кисть внутрь (к противоположному плечу)
+  crossed: {
+    leftUpperArm:  [1.30, 0, -0.40],
+    rightUpperArm: [1.30, 0, 0.40],
+    leftLowerArm:  [-1.60, 0, 0.60],
+    rightLowerArm: [-1.60, 0, -0.60],
+    leftHand:  [0, 0, 0],
+    rightHand: [0, 0, 0],
+  },
+  // Руки в карманах — слегка согнуты, кисти у бёдер.
+  'hands-pockets': {
+    leftUpperArm:  [0.20, 0, -0.95],
+    rightUpperArm: [0.20, 0, 0.95],
+    leftLowerArm:  [-0.85, 0.15, 0],
+    rightLowerArm: [-0.85, -0.15, 0],
+    leftHand:  [0, 0, 0.30],
+    rightHand: [0, 0, -0.30],
+  },
+};
+
+// Helper: Euler XYZ → quaternion array [x, y, z, w]
+function eulerToQuat(x: number, y: number, z: number): [number, number, number, number] {
+  const e = new THREE.Euler(x, y, z, 'XYZ');
+  const q = new THREE.Quaternion().setFromEuler(e);
+  return [q.x, q.y, q.z, q.w];
 }
 
 // ============================================================================
@@ -358,48 +436,38 @@ function PlatformGeometry({
 }
 
 // ============================================================================
-// BoneBases — все базовые rotations/positions для костей, которые
-// мы модифицируем в useFrame. Сохраняются ОДИН раз после применения позы.
-// Каждая анимация в useFrame использует absolute = base + delta,
-// а не += (которая накапливается и ломает позу).
+// BoneBases — все базовые rotations/positions для костей, которые мы модифицируем.
+// Храним как Euler angles (THREE.Euler), потому что применяем позу через
+// bone.rotation.set() и сбрасываем через rotation.copy(). Это согласованный
+// подход — нет конфликта между quaternion и Euler.
 // ============================================================================
 type BoneBases = {
-  // hips
-  hipsPosX: number;
-  hipsPosY: number;
-  hipsRotX: number;
-  hipsRotY: number;
-  hipsRotZ: number;
-  // spine
-  spineRotX: number;
-  spineRotY: number;
-  spineRotZ: number;
-  // head
-  headRotX: number;
-  headRotY: number;
-  headRotZ: number;
-  // shoulders
-  leftShoulderRotZ: number;
-  rightShoulderRotZ: number;
-  // upper arms
-  leftUpperArmRotX: number;
-  leftUpperArmRotZ: number;
-  rightUpperArmRotX: number;
-  rightUpperArmRotZ: number;
-  // upper legs (для weightShift)
-  leftUpperLegRotZ: number;
-  rightUpperLegRotZ: number;
+  hips: { posX: number; posY: number; rotX: number; rotY: number; rotZ: number };
+  spine: { rotX: number; rotY: number; rotZ: number };
+  head: { rotX: number; rotY: number; rotZ: number };
+  leftShoulder: { rotZ: number };
+  rightShoulder: { rotZ: number };
+  leftUpperArm: { rotX: number; rotY: number; rotZ: number };
+  rightUpperArm: { rotX: number; rotY: number; rotZ: number };
+  leftLowerArm: { rotX: number; rotY: number; rotZ: number };
+  rightLowerArm: { rotX: number; rotY: number; rotZ: number };
+  leftUpperLeg: { rotZ: number };
+  rightUpperLeg: { rotZ: number };
 };
 
 function createEmptyBases(): BoneBases {
   return {
-    hipsPosX: 0, hipsPosY: 0, hipsRotX: 0, hipsRotY: 0, hipsRotZ: 0,
-    spineRotX: 0, spineRotY: 0, spineRotZ: 0,
-    headRotX: 0, headRotY: 0, headRotZ: 0,
-    leftShoulderRotZ: 0, rightShoulderRotZ: 0,
-    leftUpperArmRotX: 0, leftUpperArmRotZ: 0,
-    rightUpperArmRotX: 0, rightUpperArmRotZ: 0,
-    leftUpperLegRotZ: 0, rightUpperLegRotZ: 0,
+    hips: { posX: 0, posY: 0, rotX: 0, rotY: 0, rotZ: 0 },
+    spine: { rotX: 0, rotY: 0, rotZ: 0 },
+    head: { rotX: 0, rotY: 0, rotZ: 0 },
+    leftShoulder: { rotZ: 0 },
+    rightShoulder: { rotZ: 0 },
+    leftUpperArm: { rotX: 0, rotY: 0, rotZ: 0 },
+    rightUpperArm: { rotX: 0, rotY: 0, rotZ: 0 },
+    leftLowerArm: { rotX: 0, rotY: 0, rotZ: 0 },
+    rightLowerArm: { rotX: 0, rotY: 0, rotZ: 0 },
+    leftUpperLeg: { rotZ: 0 },
+    rightUpperLeg: { rotZ: 0 },
   };
 }
 
@@ -453,20 +521,24 @@ function VrmModel({
           vrm.expressionManager.resetValues();
         }
 
-        // ── Применяем позу рук ──
-        const pose = ARM_POSES[config.body.armPose];
-        const humanoid = vrm.humanoid;
-        if (humanoid) {
-          const setBoneRot = (name: string, axis: 'x' | 'y' | 'z', value: number) => {
-            const node = humanoid.getNormalizedBoneNode(name as never);
-            if (node) node.rotation[axis] = value;
+        // ── Применяем позу рук напрямую через bone.rotation (Euler) ──
+        // Используем прямой доступ к bone.rotation вместо setNormalizedPose,
+        // потому что setNormalizedPose устанавливает quaternion, но vrm.update()
+        // в useFrame может его перезаписать. Прямой доступ к rotation надёжнее.
+        const poseQuat = ARM_POSE_QUATERNIONS[config.body.armPose];
+        if (vrm.humanoid) {
+          const setBoneRot = (name: string, euler: [number, number, number]) => {
+            const node = vrm.humanoid!.getNormalizedBoneNode(name as never);
+            if (node) {
+              node.rotation.set(euler[0], euler[1], euler[2]);
+            }
           };
-          setBoneRot('leftUpperArm', 'z', pose.leftUpperArmZ);
-          setBoneRot('rightUpperArm', 'z', pose.rightUpperArmZ);
-          setBoneRot('leftLowerArm', 'x', pose.leftLowerArmX);
-          setBoneRot('rightLowerArm', 'x', pose.rightLowerArmX);
-          setBoneRot('leftHand', 'z', pose.leftHandZ);
-          setBoneRot('rightHand', 'z', pose.rightHandZ);
+          setBoneRot('leftUpperArm', poseQuat.leftUpperArm);
+          setBoneRot('rightUpperArm', poseQuat.rightUpperArm);
+          setBoneRot('leftLowerArm', poseQuat.leftLowerArm);
+          setBoneRot('rightLowerArm', poseQuat.rightLowerArm);
+          setBoneRot('leftHand', poseQuat.leftHand);
+          setBoneRot('rightHand', poseQuat.rightHand);
         }
 
         vrm.scene.scale.setScalar(config.body.scale);
@@ -480,10 +552,11 @@ function VrmModel({
         }
         vrmRef.current = vrm;
 
-        // ── Сохраняем базы ВСЕХ костей, которые будем модифицировать ──
-        // Делаем это ПОСЛЕ применения позы, чтобы базы включали выбранную позу рук.
-        if (humanoid) {
-          const getBone = (name: string) => humanoid.getNormalizedBoneNode(name as never);
+        // ── Сохраняем базы ВСЕХ костей как Euler angles ──
+        // Сохраняем ПОСЛЕ применения позы, чтобы базы включали выбранную позу рук.
+        // Сброс в useFrame делаем через rotation.set() — точно восстанавливает позу.
+        if (vrm.humanoid) {
+          const getBone = (name: string) => vrm.humanoid!.getNormalizedBoneNode(name as never);
           const hips = getBone('hips');
           const spine = getBone('spine');
           const head = getBone('head');
@@ -491,45 +564,38 @@ function VrmModel({
           const rightShoulder = getBone('rightShoulder');
           const leftUpperArm = getBone('leftUpperArm');
           const rightUpperArm = getBone('rightUpperArm');
+          const leftLowerArm = getBone('leftLowerArm');
+          const rightLowerArm = getBone('rightLowerArm');
           const leftUpperLeg = getBone('leftUpperLeg');
           const rightUpperLeg = getBone('rightUpperLeg');
 
           const b = basesRef.current;
           if (hips) {
-            b.hipsPosX = hips.position.x;
-            b.hipsPosY = hips.position.y;
-            b.hipsRotX = hips.rotation.x;
-            b.hipsRotY = hips.rotation.y;
-            b.hipsRotZ = hips.rotation.z;
+            b.hips.posX = hips.position.x;
+            b.hips.posY = hips.position.y;
+            b.hips.rotX = hips.rotation.x;
+            b.hips.rotY = hips.rotation.y;
+            b.hips.rotZ = hips.rotation.z;
           }
-          if (spine) {
-            b.spineRotX = spine.rotation.x;
-            b.spineRotY = spine.rotation.y;
-            b.spineRotZ = spine.rotation.z;
-          }
-          if (head) {
-            b.headRotX = head.rotation.x;
-            b.headRotY = head.rotation.y;
-            b.headRotZ = head.rotation.z;
-          }
-          if (leftShoulder) b.leftShoulderRotZ = leftShoulder.rotation.z;
-          if (rightShoulder) b.rightShoulderRotZ = rightShoulder.rotation.z;
-          if (leftUpperArm) {
-            b.leftUpperArmRotX = leftUpperArm.rotation.x;
-            b.leftUpperArmRotZ = leftUpperArm.rotation.z;
-          }
-          if (rightUpperArm) {
-            b.rightUpperArmRotX = rightUpperArm.rotation.x;
-            b.rightUpperArmRotZ = rightUpperArm.rotation.z;
-          }
-          if (leftUpperLeg) b.leftUpperLegRotZ = leftUpperLeg.rotation.z;
-          if (rightUpperLeg) b.rightUpperLegRotZ = rightUpperLeg.rotation.z;
+          if (spine) { b.spine.rotX = spine.rotation.x; b.spine.rotY = spine.rotation.y; b.spine.rotZ = spine.rotation.z; }
+          if (head) { b.head.rotX = head.rotation.x; b.head.rotY = head.rotation.y; b.head.rotZ = head.rotation.z; }
+          if (leftShoulder) b.leftShoulder.rotZ = leftShoulder.rotation.z;
+          if (rightShoulder) b.rightShoulder.rotZ = rightShoulder.rotation.z;
+          if (leftUpperArm) { b.leftUpperArm.rotX = leftUpperArm.rotation.x; b.leftUpperArm.rotY = leftUpperArm.rotation.y; b.leftUpperArm.rotZ = leftUpperArm.rotation.z; }
+          if (rightUpperArm) { b.rightUpperArm.rotX = rightUpperArm.rotation.x; b.rightUpperArm.rotY = rightUpperArm.rotation.y; b.rightUpperArm.rotZ = rightUpperArm.rotation.z; }
+          if (leftLowerArm) { b.leftLowerArm.rotX = leftLowerArm.rotation.x; b.leftLowerArm.rotY = leftLowerArm.rotation.y; b.leftLowerArm.rotZ = leftLowerArm.rotation.z; }
+          if (rightLowerArm) { b.rightLowerArm.rotX = rightLowerArm.rotation.x; b.rightLowerArm.rotY = rightLowerArm.rotation.y; b.rightLowerArm.rotZ = rightLowerArm.rotation.z; }
+          if (leftUpperLeg) b.leftUpperLeg.rotZ = leftUpperLeg.rotation.z;
+          if (rightUpperLeg) b.rightUpperLeg.rotZ = rightUpperLeg.rotation.z;
 
           console.log('[VRM] pose applied, bases captured:', {
             armPose: config.body.armPose,
-            leftUpperArmRotZ: b.leftUpperArmRotZ.toFixed(3),
-            rightUpperArmRotZ: b.rightUpperArmRotZ.toFixed(3),
-            hipsPosY: b.hipsPosY.toFixed(3),
+            leftUpperArmRotX: b.leftUpperArm.rotX.toFixed(3),
+            leftUpperArmRotY: b.leftUpperArm.rotY.toFixed(3),
+            leftUpperArmRotZ: b.leftUpperArm.rotZ.toFixed(3),
+            leftLowerArmRotX: b.leftLowerArm.rotX.toFixed(3),
+            leftLowerArmRotZ: b.leftLowerArm.rotZ.toFixed(3),
+            hipsPosY: b.hips.posY.toFixed(3),
           });
         }
 
@@ -617,128 +683,115 @@ function VrmModel({
     const rightShoulder = humanoid.getNormalizedBoneNode('rightShoulder' as never);
     const leftUpperArm = humanoid.getNormalizedBoneNode('leftUpperArm' as never);
     const rightUpperArm = humanoid.getNormalizedBoneNode('rightUpperArm' as never);
+    const leftLowerArm = humanoid.getNormalizedBoneNode('leftLowerArm' as never);
+    const rightLowerArm = humanoid.getNormalizedBoneNode('rightLowerArm' as never);
     const leftUpperLeg = humanoid.getNormalizedBoneNode('leftUpperLeg' as never);
     const rightUpperLeg = humanoid.getNormalizedBoneNode('rightUpperLeg' as never);
 
-    // ── Шаг 1: сброс ВСЕХ модифицируемых костей к базе ──
-    // Это гарантирует, что выключение любой анимации мгновенно возвращает позу.
+    // ── Шаг 1: сброс ВСЕХ модифицируемых костей к базе (Euler) ──
+    // Используем rotation.set() / прямое присвоение — точно восстанавливает позу.
     if (hips) {
-      hips.position.x = b.hipsPosX;
-      hips.position.y = b.hipsPosY;
-      hips.rotation.x = b.hipsRotX;
-      hips.rotation.y = b.hipsRotY;
-      hips.rotation.z = b.hipsRotZ;
+      hips.position.x = b.hips.posX;
+      hips.position.y = b.hips.posY;
+      hips.rotation.x = b.hips.rotX;
+      hips.rotation.y = b.hips.rotY;
+      hips.rotation.z = b.hips.rotZ;
     }
-    if (spine) {
-      spine.rotation.x = b.spineRotX;
-      spine.rotation.y = b.spineRotY;
-      spine.rotation.z = b.spineRotZ;
-    }
-    if (head) {
-      head.rotation.x = b.headRotX;
-      head.rotation.y = b.headRotY;
-      head.rotation.z = b.headRotZ;
-    }
-    if (leftShoulder) leftShoulder.rotation.z = b.leftShoulderRotZ;
-    if (rightShoulder) rightShoulder.rotation.z = b.rightShoulderRotZ;
-    if (leftUpperArm) {
-      leftUpperArm.rotation.x = b.leftUpperArmRotX;
-      leftUpperArm.rotation.z = b.leftUpperArmRotZ;
-    }
-    if (rightUpperArm) {
-      rightUpperArm.rotation.x = b.rightUpperArmRotX;
-      rightUpperArm.rotation.z = b.rightUpperArmRotZ;
-    }
-    if (leftUpperLeg) leftUpperLeg.rotation.z = b.leftUpperLegRotZ;
-    if (rightUpperLeg) rightUpperLeg.rotation.z = b.rightUpperLegRotZ;
+    if (spine) { spine.rotation.x = b.spine.rotX; spine.rotation.y = b.spine.rotY; spine.rotation.z = b.spine.rotZ; }
+    if (head) { head.rotation.x = b.head.rotX; head.rotation.y = b.head.rotY; head.rotation.z = b.head.rotZ; }
+    if (leftShoulder) leftShoulder.rotation.z = b.leftShoulder.rotZ;
+    if (rightShoulder) rightShoulder.rotation.z = b.rightShoulder.rotZ;
+    if (leftUpperArm) { leftUpperArm.rotation.x = b.leftUpperArm.rotX; leftUpperArm.rotation.y = b.leftUpperArm.rotY; leftUpperArm.rotation.z = b.leftUpperArm.rotZ; }
+    if (rightUpperArm) { rightUpperArm.rotation.x = b.rightUpperArm.rotX; rightUpperArm.rotation.y = b.rightUpperArm.rotY; rightUpperArm.rotation.z = b.rightUpperArm.rotZ; }
+    if (leftLowerArm) { leftLowerArm.rotation.x = b.leftLowerArm.rotX; leftLowerArm.rotation.y = b.leftLowerArm.rotY; leftLowerArm.rotation.z = b.leftLowerArm.rotZ; }
+    if (rightLowerArm) { rightLowerArm.rotation.x = b.rightLowerArm.rotX; rightLowerArm.rotation.y = b.rightLowerArm.rotY; rightLowerArm.rotation.z = b.rightLowerArm.rotZ; }
+    if (leftUpperLeg) leftUpperLeg.rotation.z = b.leftUpperLeg.rotZ;
+    if (rightUpperLeg) rightUpperLeg.rotation.z = b.rightUpperLeg.rotZ;
 
     // ── Шаг 2: дыхание (absolute = base + delta) ──
     if (cfg.breathing) {
       const breath = Math.sin(animState.current.breathPhase);
       if (spine) {
-        spine.rotation.x = b.spineRotX + breath * 0.025;
-        spine.rotation.z = b.spineRotZ + Math.sin(animState.current.breathPhase * 0.5) * 0.008;
+        spine.rotation.x = b.spine.rotX + breath * 0.025;
+        spine.rotation.z = b.spine.rotZ + Math.sin(animState.current.breathPhase * 0.5) * 0.008;
       }
-      if (leftShoulder) leftShoulder.rotation.z = b.leftShoulderRotZ + breath * 0.015;
-      if (rightShoulder) rightShoulder.rotation.z = b.rightShoulderRotZ - breath * 0.015;
+      if (leftShoulder) leftShoulder.rotation.z = b.leftShoulder.rotZ + breath * 0.015;
+      if (rightShoulder) rightShoulder.rotation.z = b.rightShoulder.rotZ - breath * 0.015;
     }
 
     // ── Шаг 3: покачивание телом (absolute) ──
     if (cfg.bodySway) {
       const sway = Math.sin(animState.current.swayPhase);
       if (hips) {
-        hips.rotation.y = b.hipsRotY + sway * 0.04;
-        hips.rotation.z = b.hipsRotZ + Math.sin(animState.current.swayPhase * 0.7) * 0.015;
+        hips.rotation.y = b.hips.rotY + sway * 0.04;
+        hips.rotation.z = b.hips.rotZ + Math.sin(animState.current.swayPhase * 0.7) * 0.015;
       }
-      if (spine) {
-        spine.rotation.y = b.spineRotY + Math.sin(animState.current.swayPhase + Math.PI) * 0.02;
-      }
+      if (spine) spine.rotation.y = b.spine.rotY + Math.sin(animState.current.swayPhase + Math.PI) * 0.02;
     }
 
     // ── Шаг 4: перенос веса (absolute) ──
     if (cfg.weightShift) {
       const shift = Math.sin(animState.current.weightPhase);
-      if (hips) hips.position.x = b.hipsPosX + shift * 0.025;
-      if (leftUpperLeg) leftUpperLeg.rotation.z = b.leftUpperLegRotZ + shift * 0.02;
-      if (rightUpperLeg) rightUpperLeg.rotation.z = b.rightUpperLegRotZ + shift * 0.02;
+      if (hips) hips.position.x = b.hips.posX + shift * 0.025;
+      if (leftUpperLeg) leftUpperLeg.rotation.z = b.leftUpperLeg.rotZ + shift * 0.02;
+      if (rightUpperLeg) rightUpperLeg.rotation.z = b.rightUpperLeg.rotZ + shift * 0.02;
     }
 
-    // ── Шаг 5: микро-движения рук (absolute) ──
+    // ── Шаг 5: микро-движения рук (absolute = base + delta) ──
     if (cfg.armSway) {
       const armSway1 = Math.sin(animState.current.armPhase) * 0.04;
       const armSway2 = Math.sin(animState.current.armPhase + Math.PI) * 0.04;
       if (leftUpperArm) {
-        leftUpperArm.rotation.z = b.leftUpperArmRotZ + armSway1;
-        leftUpperArm.rotation.x = b.leftUpperArmRotX + Math.sin(animState.current.armPhase * 0.7) * 0.02;
+        leftUpperArm.rotation.z = b.leftUpperArm.rotZ + armSway1;
+        leftUpperArm.rotation.x = b.leftUpperArm.rotX + Math.sin(animState.current.armPhase * 0.7) * 0.02;
       }
       if (rightUpperArm) {
-        rightUpperArm.rotation.z = b.rightUpperArmRotZ + armSway2;
-        rightUpperArm.rotation.x = b.rightUpperArmRotX + Math.sin(animState.current.armPhase * 0.7 + Math.PI) * 0.02;
+        rightUpperArm.rotation.z = b.rightUpperArm.rotZ + armSway2;
+        rightUpperArm.rotation.x = b.rightUpperArm.rotX + Math.sin(animState.current.armPhase * 0.7 + Math.PI) * 0.02;
       }
+      if (leftLowerArm) leftLowerArm.rotation.x = b.leftLowerArm.rotX + Math.sin(animState.current.armPhase * 0.5) * 0.015;
+      if (rightLowerArm) rightLowerArm.rotation.x = b.rightLowerArm.rotX + Math.sin(animState.current.armPhase * 0.5 + Math.PI) * 0.015;
     }
 
     // ── Шаг 6: эмоциональная поза (absolute = base + delta) ──
-    // Все вычисления — относительно базы, никаких +=.
     if (cfg.emotionPose) {
       // Joy — лёгкое подпрыгивание
       if (emotion.joy > 0.6 && hips) {
         const bounce = Math.sin(t * 2.5) * 0.015 * (emotion.joy - 0.5);
-        hips.position.y = b.hipsPosY + bounce;
+        hips.position.y = b.hips.posY + bounce;
       }
       // Sadness — плечи вперёд, голова вниз
       if (emotion.sadness > 0.4) {
         const intensity = (emotion.sadness - 0.3) * 0.5;
-        if (spine) spine.rotation.x = b.spineRotX + intensity * 0.08;
-        if (head) head.rotation.x = b.headRotX + intensity * 0.1;
-        if (leftShoulder) leftShoulder.rotation.z = b.leftShoulderRotZ + intensity * 0.05;
-        if (rightShoulder) rightShoulder.rotation.z = b.rightShoulderRotZ - intensity * 0.05;
+        if (spine) spine.rotation.x = b.spine.rotX + intensity * 0.08;
+        if (head) head.rotation.x = b.head.rotX + intensity * 0.1;
+        if (leftShoulder) leftShoulder.rotation.z = b.leftShoulder.rotZ + intensity * 0.05;
+        if (rightShoulder) rightShoulder.rotation.z = b.rightShoulder.rotZ - intensity * 0.05;
       }
       // Irritation — подбородок вверх, руки ближе к корпусу
       if (emotion.irritation > 0.4) {
         const intensity = (emotion.irritation - 0.3) * 0.5;
-        if (head) head.rotation.x = b.headRotX - intensity * 0.06;
-        if (leftUpperArm) leftUpperArm.rotation.z = b.leftUpperArmRotZ + intensity * 0.04;
-        if (rightUpperArm) rightUpperArm.rotation.z = b.rightUpperArmRotZ - intensity * 0.04;
+        if (head) head.rotation.x = b.head.rotX - intensity * 0.06;
+        if (leftUpperArm) leftUpperArm.rotation.z = b.leftUpperArm.rotZ + intensity * 0.04;
+        if (rightUpperArm) rightUpperArm.rotation.z = b.rightUpperArm.rotZ - intensity * 0.04;
       }
       // Curiosity — наклон головы вбок
       if (emotion.curiosity > 0.6 && head) {
         const intensity = (emotion.curiosity - 0.5) * 0.3;
-        head.rotation.z = b.headRotZ + Math.sin(t * 0.4) * intensity * 0.08;
+        head.rotation.z = b.head.rotZ + Math.sin(t * 0.4) * intensity * 0.08;
       }
       // Calm — расслабленные плечи
       if (emotion.calm > 0.6) {
         const intensity = (emotion.calm - 0.5) * 0.2;
-        if (leftShoulder) leftShoulder.rotation.z = b.leftShoulderRotZ - intensity * 0.03;
-        if (rightShoulder) rightShoulder.rotation.z = b.rightShoulderRotZ + intensity * 0.03;
+        if (leftShoulder) leftShoulder.rotation.z = b.leftShoulder.rotZ - intensity * 0.03;
+        if (rightShoulder) rightShoulder.rotation.z = b.rightShoulder.rotZ + intensity * 0.03;
       }
     }
 
     // ── Шаг 7: покачивание головой + gaze follow (absolute) ──
     if (cfg.headSway && head) {
-      const headY = Math.sin(animState.current.headPhase) * 0.08;
-      const headX = Math.sin(animState.current.headPhase * 0.6) * 0.03;
-      head.rotation.y = b.headRotY + headY;
-      head.rotation.x = b.headRotX + headX;
+      head.rotation.y = b.head.rotY + Math.sin(animState.current.headPhase) * 0.08;
+      head.rotation.x = b.head.rotX + Math.sin(animState.current.headPhase * 0.6) * 0.03;
     }
     if (cfg.gazeFollow && head) {
       if (mouseRef.current.hasMouse) {

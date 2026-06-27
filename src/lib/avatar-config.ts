@@ -108,22 +108,32 @@ export type AvatarConfig = {
 };
 
 // ============================================================================
-// Пресеты камеры — подобраны под реальные габариты sample.vrm (высота 1.58m)
+// Пресеты камеры — подобраны под реальные габариты Lia.vrm
+// (высота 1.666m от Y=0 до Y=1.666, ширина в T-pose 1.336m).
+// hips на Y≈0.95, голова на Y≈1.55.
+// Формула: видимая высота ≈ 2 * d * tan(FOV/2).
 // ============================================================================
 export const CAMERA_PRESETS: Record<Exclude<CameraPreset, 'custom'>, Omit<AvatarCameraConfig, 'preset'>> = {
+  // Голова и плечи — крупный план по грудь.
+  // Камера на высоте груди, смотрит горизонтально, FOV 30°.
   portrait: {
-    position: [0, 1.45, 0.95],
-    target:   [0, 1.40, 0],
+    position: [0, 1.45, 1.0],
+    target:   [0, 1.42, 0],
     fov: 30,
   },
+  // В полный рост — видна вся модель от макушки до стоп + платформа.
+  // Габариты Lia.vrm: высота 1.666m. Центр модели ≈ Y=0.83.
+  // При FOV 38° (tan(19°)=0.344): чтобы видеть ~2.1m по вертикали
+  // (модель + платформа + отступ), нужно d = 2.1 / (2*0.344) ≈ 3.05m.
   fullbody: {
-    position: [0, 0.95, 2.9],
-    target:   [0, 0.85, 0],
+    position: [0, 1.0, 3.05],
+    target:   [0, 0.83, 0],
     fov: 38,
   },
+  // Крупно лицо — для интимной беседы.
   closeup: {
-    position: [0, 1.50, 0.65],
-    target:   [0, 1.48, 0],
+    position: [0, 1.55, 0.7],
+    target:   [0, 1.52, 0],
     fov: 25,
   },
 };
@@ -220,55 +230,125 @@ export const LIGHTING_PRESETS: Record<LightingPreset, {
 };
 
 // ============================================================================
-// Arm pose presets — углы поворота плечевых костей в радианах
+// Arm pose presets — углы поворота костей рук в радианах.
+//
+// Координатная система VRM normalized bones (правая, Y-up):
+//   upperArm.rotation.z < 0 → опускает левую руку вниз (для правой — > 0)
+//   upperArm.rotation.x     → поднимает руку вперёд (сгибание в плече)
+//   lowerArm.rotation.x     → сгибает локоть (кисть к плечу)
+//   lowerArm.rotation.y     → вращает предплечье внутрь/наружу
+//   hand.rotation.z         → наклон кисти
+//
+// Все углы подобраны визуально на модели Lia.vrm (высота 1.666m).
 // ============================================================================
 export const ARM_POSES: Record<ArmPose, {
   leftUpperArmZ: number;
   rightUpperArmZ: number;
+  leftUpperArmX: number;
+  rightUpperArmX: number;
+  leftUpperArmY: number;   // приведение к корпусу (adduction) — нужно для crossed
+  rightUpperArmY: number;
   leftLowerArmX: number;
   rightLowerArmX: number;
+  leftLowerArmY: number;
+  rightLowerArmY: number;
+  leftLowerArmZ: number;   // Z-вращение предплечья
+  rightLowerArmZ: number;
   leftHandZ: number;
   rightHandZ: number;
 }> = {
+  // Естественная поза — руки опущены вдоль тела.
   natural: {
     leftUpperArmZ: -1.35,
     rightUpperArmZ: 1.35,
+    leftUpperArmX: 0.05,
+    rightUpperArmX: 0.05,
+    leftUpperArmY: 0,
+    rightUpperArmY: 0,
     leftLowerArmX: -0.25,
     rightLowerArmX: -0.25,
+    leftLowerArmY: 0,
+    rightLowerArmY: 0,
+    leftLowerArmZ: 0,
+    rightLowerArmZ: 0,
     leftHandZ: 0.15,
     rightHandZ: -0.15,
   },
+  // Расслабленная — руки чуть согнуты.
   relaxed: {
     leftUpperArmZ: -1.15,
     rightUpperArmZ: 1.15,
+    leftUpperArmX: 0.10,
+    rightUpperArmX: 0.10,
+    leftUpperArmY: 0,
+    rightUpperArmY: 0,
     leftLowerArmX: -0.55,
     rightLowerArmX: -0.55,
-    leftHandZ: 0.2,
-    rightHandZ: -0.2,
+    leftLowerArmY: 0.05,
+    rightLowerArmY: -0.05,
+    leftLowerArmZ: 0,
+    rightLowerArmZ: 0,
+    leftHandZ: 0.20,
+    rightHandZ: -0.20,
   },
   't-pose': {
     leftUpperArmZ: 0,
     rightUpperArmZ: 0,
+    leftUpperArmX: 0,
+    rightUpperArmX: 0,
+    leftUpperArmY: 0,
+    rightUpperArmY: 0,
     leftLowerArmX: 0,
     rightLowerArmX: 0,
+    leftLowerArmY: 0,
+    rightLowerArmY: 0,
+    leftLowerArmZ: 0,
+    rightLowerArmZ: 0,
     leftHandZ: 0,
     rightHandZ: 0,
   },
+  // Скрещённые на груди.
+  // VRM normalized bones Euler XYZ:
+  //   upperArm.X = поднять руку вперёд
+  //   upperArm.Y = привести к корпусу (горизонтальная аддукция)
+  //   upperArm.Z = опустить вниз (при X≈0)
+  //   lowerArm.X = согнуть локоть
+  //   lowerArm.Y = вращение предплечья (pronation/supination)
+  //   lowerArm.Z = отвести кисть внутрь/наружу
+  // Для crossed: поднимаем руки вперёд, приводим к центру, сгибаем локти.
   crossed: {
-    leftUpperArmZ: -0.85,
-    rightUpperArmZ: 0.85,
-    leftLowerArmX: -1.1,
-    rightLowerArmX: -1.1,
-    leftHandZ: 0.6,
-    rightHandZ: -0.6,
+    leftUpperArmZ: -0.20,
+    rightUpperArmZ: 0.20,
+    leftUpperArmX: 1.20,
+    rightUpperArmX: 1.20,
+    // Y — привести руки к центру корпуса (горизонтальная аддукция)
+    // Левая рука поворачивается +Y (внутрь), правая -Y (внутрь)
+    leftUpperArmY: 0.80,
+    rightUpperArmY: -0.80,
+    leftLowerArmX: -1.60,
+    rightLowerArmX: -1.60,
+    leftLowerArmY: 0,
+    rightLowerArmY: 0,
+    leftLowerArmZ: 0.40,
+    rightLowerArmZ: -0.40,
+    leftHandZ: 0.10,
+    rightHandZ: -0.10,
   },
   'hands-pockets': {
     leftUpperArmZ: -0.95,
     rightUpperArmZ: 0.95,
-    leftLowerArmX: -0.75,
-    rightLowerArmX: -0.75,
-    leftHandZ: 0.3,
-    rightHandZ: -0.3,
+    leftUpperArmX: 0.20,
+    rightUpperArmX: 0.20,
+    leftUpperArmY: 0,
+    rightUpperArmY: 0,
+    leftLowerArmX: -0.85,
+    rightLowerArmX: -0.85,
+    leftLowerArmY: 0.15,
+    rightLowerArmY: -0.15,
+    leftLowerArmZ: 0,
+    rightLowerArmZ: 0,
+    leftHandZ: 0.30,
+    rightHandZ: -0.30,
   },
 };
 

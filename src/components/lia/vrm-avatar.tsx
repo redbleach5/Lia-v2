@@ -34,7 +34,7 @@ export function VrmAvatar({ emotion, speaking = false, size = 320, src = DEFAULT
   return (
     <div style={{ width: size, height: size }} className="relative">
       <Canvas
-        camera={{ position: [0, 1.35, 1.2], fov: 35 }}
+        camera={{ position: [0, 1.1, 1.4], fov: 40 }}
         gl={{ alpha: true, antialias: true }}
         dpr={[1, 2]}
       >
@@ -52,22 +52,38 @@ export function VrmAvatar({ emotion, speaking = false, size = 320, src = DEFAULT
 function Scene({ emotion, speaking, src }: { emotion: EmotionVector; speaking: boolean; src: string }) {
   return (
     <>
-      {/* Lighting — мягкое, как утренний свет. Тёплое, не холодное. */}
-      <ambientLight intensity={0.8} color="#faf8f5" />
+      {/* Lighting — мягкое, как утренний свет. */}
+      <ambientLight intensity={0.8} color="#fafafa" />
       <directionalLight position={[2, 4, 3]} intensity={0.8} color="#fff5e8" />
       <directionalLight position={[-2, 2, 1]} intensity={0.3} color="#e8d5c0" />
-
-      {/* Тёплый fill снизу — как отражение от светлой поверхности */}
       <pointLight position={[0, -0.5, 2]} intensity={0.15} color="#c9a886" distance={4} />
 
       <VrmModel emotion={emotion} speaking={speaking} src={src} />
 
+      {/* Платформа — сплющенный цилиндр, на котором стоит Лия */}
+      <mesh position={[0, 0.02, 0]} rotation={[0, 0, 0]}>
+        <cylinderGeometry args={[0.55, 0.6, 0.04, 64]} />
+        <meshStandardMaterial
+          color="#c9a886"
+          transparent
+          opacity={0.35}
+          roughness={0.6}
+          metalness={0.1}
+        />
+      </mesh>
+
+      {/* Тонкое кольцо-ободок на платформе */}
+      <mesh position={[0, 0.04, 0]}>
+        <torusGeometry args={[0.57, 0.005, 8, 64]} />
+        <meshStandardMaterial color="#8b6f47" transparent opacity={0.4} />
+      </mesh>
+
       <OrbitControls
-        target={[0, 1.35, 0]}
+        target={[0, 1.0, 0]}
         enablePan={false}
         enableZoom={false}
-        minPolarAngle={Math.PI / 3}
-        maxPolarAngle={Math.PI / 2}
+        minPolarAngle={Math.PI / 3.5}
+        maxPolarAngle={Math.PI / 2.1}
         minAzimuthAngle={-Math.PI / 6}
         maxAzimuthAngle={Math.PI / 6}
       />

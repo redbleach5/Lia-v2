@@ -34,10 +34,10 @@ export function AvatarColumn() {
   }, []);
 
   return (
-    <aside className="w-72 border-l border-border bg-background flex flex-col shrink-0 overflow-hidden">
+    <aside className="w-72 flex flex-col shrink-0 overflow-hidden">
       <div className="flex-1 overflow-y-auto p-4 space-y-5">
-        {/* Avatar */}
-        <div className="flex justify-center pt-2 pb-4 min-h-[200px] items-center">
+        {/* Avatar — без рамок, без фона, стоит на платформе */}
+        <div className="flex justify-center pt-2 pb-4 min-h-[280px] items-end">
           {avatarMode === '3d' ? (
             <VrmErrorBoundary onError={() => setAvatarMode('live2d')}>
               <VrmAvatar emotion={emotion} speaking={isStreaming} size={280} src={vrmSrc} />

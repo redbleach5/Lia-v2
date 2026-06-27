@@ -65,11 +65,19 @@ export async function completeExperience(id: string, params: {
   signals: RLRewardSignals;
 }): Promise<void> {
   try {
+    // ВАЖНО: reward ДОБАВЛЯЕТСЯ к существующему, не перезаписывает.
+    // Self-check мог уже записать penalty (negative reward) в поле reward.
+    // computeRewardLocally вычисляет reward на основе поведения пользователя
+    // (latency, length, sentiment). Финальный reward = behavior_reward + quality_penalty.
+    const existing = await db.rLExperience.findUnique({ where: { id }, select: { reward: true } });
+    const existingReward = existing?.reward ?? 0;
+    const finalReward = existingReward + params.reward;
+
     await db.rLExperience.update({
       where: { id },
       data: {
         nextStateJson: JSON.stringify(params.nextState),
-        reward: params.reward,
+        reward: finalReward,
         userResponded: params.signals.userResponded,
         responseLatencySec: params.signals.responseLatencySec,
         messageLength: params.signals.messageLength,

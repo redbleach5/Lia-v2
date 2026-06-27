@@ -338,6 +338,7 @@ function makeSpawnSubagentTool(task: AgentTask) {
         // (runner.ts импортирует tools.ts через buildAgentTools)
         const { createAgentTask } = await import('./task');
         const { runAgentTask } = await import('./runner');
+        const { getAgentTask } = await import('./task');
 
         // Создаём дочернюю задачу
         const subTask = await createAgentTask({
@@ -350,15 +351,42 @@ function makeSpawnSubagentTool(task: AgentTask) {
           maxDurationSec: Math.min(300, task.maxDurationSec),  // максимум 5 мин
         });
 
-        // Запускаем и ждём завершения (блокирует текущий шаг)
-        await runAgentTask(subTask.id);
+        // Запускаем sub-agent с timeout — если sub-agent входит в waiting_input
+        // (задаёт вопрос пользователю), родитель не должен блокировать навсегда.
+        // Таймаут = maxDurationSec под-агента + 30 сек запас.
+        const subTimeoutMs = Math.min(300, task.maxDurationSec) * 1000 + 30_000;
+        let timedOut = false;
+
+        await Promise.race([
+          runAgentTask(subTask.id),
+          new Promise<void>((_, reject) =>
+            setTimeout(() => {
+              timedOut = true;
+              reject(new Error(`Под-агент превысил лимит времени (${subTimeoutMs / 1000} сек)`));
+            }, subTimeoutMs),
+          ),
+        ]).catch(e => {
+          if (!timedOut) throw e;  // реальная ошибка, не таймаут
+          console.warn(`[spawn_subagent] timed out after ${subTimeoutMs}ms`);
+        });
 
         // Получаем результат
-        const { getAgentTask } = await import('./task');
         const completed = await getAgentTask(subTask.id);
 
         if (!completed) {
           return { error: 'Под-агент завершился без результата', goal, subTaskId: subTask.id };
+        }
+
+        // Если таймаут — задача может быть ещё в transient-статусе
+        if (timedOut && ['planning', 'executing', 'waiting_input', 'synthesizing'].includes(completed.status)) {
+          // Помечаем как failed чтобы не висела
+          const { cancelAgentTask } = await import('./task');
+          await cancelAgentTask(subTask.id);
+          return {
+            error: `Под-агент не уложился в ${subTimeoutMs / 1000} сек. Возможно, он ждал ввода от пользователя. Задача отменена.`,
+            goal,
+            subTaskId: subTask.id,
+          };
         }
 
         if (completed.status === 'failed') {
@@ -492,36 +520,55 @@ export function describeTools(tools: ToolSet): string {
 }
 
 // ============================================================================
-// Helper: извлечь параметры из Zod-схемы (v3 или v4)
+// Helper: извлечь параметры из Zod-схемы.
+//
+// Zod v4 internal API (проверено на zod@4.3.5):
+//   - schema._def.shape — ОБЪЕКТ (не функция, как в v3), содержит поля
+//   - field._def.type — строка: 'string', 'number', 'default', 'optional', etc.
+//   - field.description — описание (на самом поле, не на _def)
+//   - field._def.innerType — обёрнутый тип (для default/optional wrappers)
+//
+// Для default/optional нужно развернуть (unwrap) до базового типа.
 // ============================================================================
 type ZodParam = { name: string; type: string; required: boolean; description?: string };
 
 function extractZodParams(schema: unknown): ZodParam[] {
   try {
-    // Zod v3: _def.shape() возвращает объект ZodType по полям
-    // Zod v4: _def.shape тоже работает
-    const s = schema as { _def?: { shape?: () => Record<string, unknown> } };
+    const s = schema as { _def?: { shape?: Record<string, unknown> } };
     if (!s?._def?.shape) return [];
 
-    const shape = s._def.shape();
+    // Zod v4: _def.shape — это объект, не функция
+    const shape = s._def.shape;
     const params: ZodParam[] = [];
 
     for (const [name, field] of Object.entries(shape)) {
       const f = field as {
-        _def?: { typeName?: string; description?: string };
+        _def?: { type?: string; innerType?: unknown };
         description?: string;
         isOptional?: () => boolean;
       };
 
-      // Тип — извлекаем из typeName
-      const typeName = f?._def?.typeName ?? 'unknown';
-      const type = zodTypeNameToSimple(typeName);
+      // Разворачиваем default/optional wrappers до базового типа
+      let inner = f;
+      let hasDefault = false;
+      let hasOptional = false;
 
-      // Optional?
-      const required = !(typeof f?.isOptional === 'function' && f.isOptional());
+      while (inner?._def && (inner._def.type === 'default' || inner._def.type === 'optional')) {
+        if (inner._def.type === 'default') hasDefault = true;
+        if (inner._def.type === 'optional') hasOptional = true;
+        inner = inner._def.innerType as typeof inner;
+      }
 
-      // Description — может быть в _def.description или в .description
-      const description = f?._def?.description ?? f?.description;
+      const baseType = inner?._def?.type ?? 'unknown';
+      const type = zodTypeToSimple(baseType);
+
+      // required = нет default И нет optional.
+      // default означает "модель может не передать — подставится дефолт",
+      // поэтому с точки зрения tool-calling это optional.
+      const required = !hasDefault && !hasOptional;
+
+      // description — на самом поле, не на _def (Zod v4)
+      const description = f.description;
 
       params.push({ name, type, required, description });
     }
@@ -532,11 +579,11 @@ function extractZodParams(schema: unknown): ZodParam[] {
   }
 }
 
-function zodTypeNameToSimple(typeName: string): string {
-  if (typeName.includes('String')) return 'string';
-  if (typeName.includes('Number')) return 'number';
-  if (typeName.includes('Boolean')) return 'boolean';
-  if (typeName.includes('Array')) return 'array';
-  if (typeName.includes('Object')) return 'object';
+function zodTypeToSimple(typeName: string): string {
+  if (typeName.includes('string')) return 'string';
+  if (typeName.includes('number')) return 'number';
+  if (typeName.includes('boolean')) return 'boolean';
+  if (typeName.includes('array')) return 'array';
+  if (typeName.includes('object')) return 'object';
   return 'string';
 }

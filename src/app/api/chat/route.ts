@@ -383,19 +383,19 @@ export async function POST(req: NextRequest) {
         }).then(async (checkResult) => {
           if (checkResult.severity !== 'ok' && rlExperienceId) {
             try {
-              // Загружаем текущий experience, корректируем reward
-              const { findLastIncompleteExperience, completeExperience, computeRewardLocally } = await import('@/lib/rl/recorder');
+              // Загружаем текущий experience, проверяем что это тот же (не новый)
+              const { findLastIncompleteExperience } = await import('@/lib/rl/recorder');
               const exp = await findLastIncompleteExperience(episodeId);
               if (exp && exp.id === rlExperienceId) {
-                // Негативная коррекция reward на основе severity
+                // Негативная коррекция reward на основе severity.
+                // reward на этом этапе = 0 (experience только создан, userResponded=false).
+                // Penalty: major = -0.5, minor = -0.2.
+                // Когда user ответит и completeExperience обновит reward,
+                // penalty уже учтён в значении.
                 const penalty = checkResult.severity === 'major' ? -0.5 : -0.2;
-                const currentReward = exp.reward;  // исходный reward (0 на этом этапе)
-                const adjustedReward = currentReward + penalty;
-                // Пересохраняем с тем же nextState но скорректированным reward
-                // (signals уже записаны, только обновляем reward)
                 await db.rLExperience.update({
                   where: { id: rlExperienceId },
-                  data: { reward: adjustedReward },
+                  data: { reward: exp.reward + penalty },
                 });
                 console.log(`[chat] self-check: adjusted reward for ${rlExperienceId.slice(0, 8)} by ${penalty} (${checkResult.severity})`);
               }

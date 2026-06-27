@@ -191,10 +191,20 @@ export async function runAgentTask(taskId: string): Promise<void> {
       if (elapsedSec > task.maxDurationSec) {
         // Продлеваем таймер на половину исходного лимита (минимум 60 сек)
         const extensionSec = Math.max(60, Math.floor(task.maxDurationSec / 2));
-        await pauseTaskForInput(
+        const userAnswer = await pauseTaskForInput(
           taskId,
           `Превышен лимит времени (${Math.floor(elapsedSec)} сек из ${task.maxDurationSec}). Продолжить ещё на ${extensionSec} сек или остановиться? Ответь "продолжить" или "стоп".`,
         );
+
+        // Парсим ответ пользователя — если "стоп"/"stop"/"нет"/"no", отменяем
+        const answerLower = userAnswer.toLowerCase().trim();
+        const stopWords = ['стоп', 'stop', 'нет', 'no', 'отмена', 'cancel', 'остановись', 'хватит'];
+        if (stopWords.some(w => answerLower.includes(w))) {
+          // Пользователь сказал остановиться — отменяем задачу
+          signalCancellation(taskId);
+          continue;
+        }
+
         if (isCancelled(taskId)) continue;
         // Продлеваем startTime чтобы следующий budget check не сработал сразу
         startTime = Date.now() - (task.maxDurationSec - extensionSec) * 1000;
@@ -606,17 +616,18 @@ ${stepsBlock}`;
 }
 
 // ============================================================================
-// Pause task — wait for user input
+// Pause task — wait for user input.
+// Возвращает ответ пользователя (string) чтобы caller мог его парсить.
 // ============================================================================
-async function pauseTaskForInput(taskId: string, question: string): Promise<void> {
+async function pauseTaskForInput(taskId: string, question: string): Promise<string> {
   await updateAgentTask(taskId, { status: 'waiting_input' });
 
-  return new Promise((resolve, reject) => {
+  return new Promise<string>((resolve, reject) => {
     setWaiting(taskId, {
       question,
-      resolve: () => {
+      resolve: (answer: string) => {
         // After user responds, switch back to executing
-        updateAgentTask(taskId, { status: 'executing' }).then(() => resolve());
+        updateAgentTask(taskId, { status: 'executing' }).then(() => resolve(answer));
       },
       reject: (err: Error) => reject(err),
     });

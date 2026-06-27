@@ -301,7 +301,7 @@ function WaitingInputDialog({ onSubmit }: { onSubmit: (answer: string) => void }
         <button
           onClick={handleSubmit}
           disabled={!answer.trim()}
-          className="px-2 py-1 text-[11px] rounded bg-accent text-white hover:bg-accent/90 disabled:opacity-50 transition-colors"
+          className="px-2 py-1 text-[11px] rounded bg-accent text-background hover:bg-accent/90 disabled:opacity-50 transition-colors"
         >
           Ответить
         </button>

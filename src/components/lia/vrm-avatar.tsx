@@ -52,13 +52,13 @@ export function VrmAvatar({ emotion, speaking = false, size = 320, src = DEFAULT
 function Scene({ emotion, speaking, src }: { emotion: EmotionVector; speaking: boolean; src: string }) {
   return (
     <>
-      {/* Lighting — soft, no harsh shadows */}
-      <ambientLight intensity={0.6} />
-      <directionalLight position={[2, 4, 3]} intensity={1.2} color="#ffffff" />
-      <directionalLight position={[-2, 2, -1]} intensity={0.4} color="#a78bfa" />
+      {/* Lighting — мягкое, как утренний свет. Тёплое, не холодное. */}
+      <ambientLight intensity={0.8} color="#faf8f5" />
+      <directionalLight position={[2, 4, 3]} intensity={0.8} color="#fff5e8" />
+      <directionalLight position={[-2, 2, 1]} intensity={0.3} color="#e8d5c0" />
 
-      {/* Slight violet fill from below — matches UI accent */}
-      <pointLight position={[0, -1, 2]} intensity={0.3} color="#8b5cf6" distance={5} />
+      {/* Тёплый fill снизу — как отражение от светлой поверхности */}
+      <pointLight position={[0, -0.5, 2]} intensity={0.15} color="#c9a886" distance={4} />
 
       <VrmModel emotion={emotion} speaking={speaking} src={src} />
 

@@ -19,7 +19,7 @@ export default function HomePage() {
       <header className="h-12 border-b border-border flex items-center px-4 gap-3 shrink-0">
         <div className="flex items-center gap-2">
           <div className="w-5 h-5 rounded-md bg-accent flex items-center justify-center">
-            <span className="text-[10px] font-bold text-white">Л</span>
+            <span className="text-[10px] font-bold text-background">Л</span>
           </div>
           <span className="text-sm font-medium tracking-tight">Лия</span>
           <span className="text-[10px] text-text-dim font-mono">v2.0</span>

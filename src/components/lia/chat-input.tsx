@@ -152,7 +152,7 @@ export function ChatInput({ onSend, isStreaming, onStop, disabled }: ChatInputPr
           <button
             onClick={onStop}
             title="Остановить"
-            className="h-[40px] w-[40px] shrink-0 rounded-md bg-destructive hover:bg-destructive/90 text-white flex items-center justify-center transition-colors"
+            className="h-[40px] w-[40px] shrink-0 rounded-md bg-destructive hover:bg-destructive/90 text-background flex items-center justify-center transition-colors"
           >
             <StopCircle className="w-4 h-4" />
           </button>
@@ -164,8 +164,8 @@ export function ChatInput({ onSend, isStreaming, onStop, disabled }: ChatInputPr
             className={cn(
               'h-[40px] w-[40px] shrink-0 rounded-md flex items-center justify-center transition-colors',
               mode === 'agent'
-                ? 'bg-rose-500 hover:bg-rose-600 text-white'
-                : 'bg-accent hover:bg-accent/90 text-white',
+                ? 'bg-taupe hover:bg-taupe/90 text-background'
+                : 'bg-accent hover:bg-accent/90 text-background',
               (!text.trim() || disabled) && 'opacity-50 cursor-not-allowed',
             )}
           >

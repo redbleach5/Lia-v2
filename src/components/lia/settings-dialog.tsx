@@ -690,7 +690,7 @@ export function SettingsDialog() {
               <div className="rounded-md border border-border bg-surface/50 p-4 space-y-2">
                 <div className="flex items-center gap-3">
                   <div className="w-10 h-10 rounded-md bg-accent flex items-center justify-center">
-                    <span className="text-base font-bold text-white">Л</span>
+                    <span className="text-base font-bold text-background">Л</span>
                   </div>
                   <div>
                     <div className="text-sm font-medium">Лия v2.0</div>

@@ -1,17 +1,26 @@
 import type { Metadata } from "next";
-import { Inter, JetBrains_Mono } from "next/font/google";
+import { Plus_Jakarta_Sans, Inter, JetBrains_Mono } from "next/font/google";
 import "./globals.css";
 import { Toaster } from "@/components/ui/sonner";
 
-const inter = Inter({
+const jakarta = Plus_Jakarta_Sans({
   variable: "--font-sans",
-  subsets: ["latin", "cyrillic"],
+  subsets: ["latin", "cyrillic-ext"],
+  weight: ["300", "400", "500", "600", "700"],
   display: "swap",
 });
 
-const jetbrainsMono = JetBrains_Mono({
+const inter = Inter({
+  variable: "--font-display",
+  subsets: ["latin", "cyrillic"],
+  weight: ["400", "500", "600", "700", "800"],
+  display: "swap",
+});
+
+const jetbrains = JetBrains_Mono({
   variable: "--font-mono",
   subsets: ["latin", "cyrillic"],
+  weight: ["400", "500", "600"],
   display: "swap",
 });
 
@@ -29,14 +38,13 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="ru" className="dark" suppressHydrationWarning>
+    <html lang="ru" suppressHydrationWarning>
       <body
-        className={`${inter.variable} ${jetbrainsMono.variable} antialiased bg-background text-foreground font-sans`}
+        className={`${jakarta.variable} ${inter.variable} ${jetbrains.variable} antialiased bg-background text-foreground font-sans`}
       >
         {children}
         <Toaster
           position="bottom-right"
-          theme="dark"
           toastOptions={{
             style: {
               background: "var(--surface-2)",

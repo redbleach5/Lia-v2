@@ -1,11 +1,5 @@
 'use client';
 
-// VRM 3D Avatar — загружает VRM модель, применяет blendshapes по эмоциям,
-// добавляет дыхание, моргание, lip-sync при говорении.
-//
-// Источник модели: /public/models/sample.vrm (или /models/Lia.vrm если есть).
-// Можно подменить через props.src.
-
 import { Canvas, useFrame, useLoader } from '@react-three/fiber';
 import { OrbitControls } from '@react-three/drei';
 import * as THREE from 'three';
@@ -14,9 +8,6 @@ import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { useEffect, useMemo, useRef, useState, Suspense } from 'react';
 import type { EmotionVector } from '@/lib/personality';
 
-// ============================================================================
-// Props
-// ============================================================================
 export type VrmAvatarProps = {
   emotion: EmotionVector;
   speaking?: boolean;
@@ -24,17 +15,13 @@ export type VrmAvatarProps = {
   src?: string;
 };
 
-// Default model path — relative to public/
 const DEFAULT_VRM_SRC = '/models/sample.vrm';
 
-// ============================================================================
-// Main component
-// ============================================================================
-export function VrmAvatar({ emotion, speaking = false, size = 320, src = DEFAULT_VRM_SRC }: VrmAvatarProps) {
+export function VrmAvatar({ emotion, speaking = false, size = 280, src = DEFAULT_VRM_SRC }: VrmAvatarProps) {
   return (
     <div style={{ width: size, height: size }} className="relative">
       <Canvas
-        camera={{ position: [0, 1.1, 1.4], fov: 40 }}
+        camera={{ position: [0, 1.4, 0.9], fov: 35 }}
         gl={{ alpha: true, antialias: true }}
         dpr={[1, 2]}
       >
@@ -46,65 +33,48 @@ export function VrmAvatar({ emotion, speaking = false, size = 320, src = DEFAULT
   );
 }
 
-// ============================================================================
-// Scene — lighting + VRM model
-// ============================================================================
 function Scene({ emotion, speaking, src }: { emotion: EmotionVector; speaking: boolean; src: string }) {
   return (
     <>
-      {/* Lighting — мягкое, как утренний свет. */}
-      <ambientLight intensity={0.8} color="#fafafa" />
-      <directionalLight position={[2, 4, 3]} intensity={0.8} color="#fff5e8" />
-      <directionalLight position={[-2, 2, 1]} intensity={0.3} color="#e8d5c0" />
-      <pointLight position={[0, -0.5, 2]} intensity={0.15} color="#c9a886" distance={4} />
+      <ambientLight intensity={0.9} color="#ffffff" />
+      <directionalLight position={[1, 3, 2]} intensity={1.0} color="#fff5e8" />
+      <directionalLight position={[-1, 2, 1]} intensity={0.3} color="#e8d5c0" />
 
       <VrmModel emotion={emotion} speaking={speaking} src={src} />
 
-      {/* Платформа — сплющенный цилиндр, на котором стоит Лия */}
-      <mesh position={[0, 0.02, 0]} rotation={[0, 0, 0]}>
-        <cylinderGeometry args={[0.55, 0.6, 0.04, 64]} />
-        <meshStandardMaterial
-          color="#c9a886"
-          transparent
-          opacity={0.35}
-          roughness={0.6}
-          metalness={0.1}
-        />
+      {/* Платформа */}
+      <mesh position={[0, 0.005, 0]}>
+        <cylinderGeometry args={[0.4, 0.45, 0.03, 48]} />
+        <meshStandardMaterial color="#c9a886" transparent opacity={0.3} roughness={0.7} />
       </mesh>
-
-      {/* Тонкое кольцо-ободок на платформе */}
-      <mesh position={[0, 0.04, 0]}>
-        <torusGeometry args={[0.57, 0.005, 8, 64]} />
+      <mesh position={[0, 0.02, 0]}>
+        <torusGeometry args={[0.42, 0.004, 8, 48]} />
         <meshStandardMaterial color="#8b6f47" transparent opacity={0.4} />
       </mesh>
 
       <OrbitControls
-        target={[0, 1.0, 0]}
+        target={[0, 1.25, 0]}
         enablePan={false}
-        enableZoom={false}
-        minPolarAngle={Math.PI / 3.5}
-        maxPolarAngle={Math.PI / 2.1}
-        minAzimuthAngle={-Math.PI / 6}
-        maxAzimuthAngle={Math.PI / 6}
+        enableZoom={true}
+        minDistance={0.6}
+        maxDistance={1.5}
+        minPolarAngle={Math.PI / 4}
+        maxPolarAngle={Math.PI / 2}
+        minAzimuthAngle={-Math.PI / 5}
+        maxAzimuthAngle={Math.PI / 5}
       />
     </>
   );
 }
 
-// ============================================================================
-// VRM Model — loads, animates, applies blendshapes
-// ============================================================================
 function VrmModel({ emotion, speaking, src }: { emotion: EmotionVector; speaking: boolean; src: string }) {
   const groupRef = useRef<THREE.Group>(null);
   const vrmRef = useRef<VRM | null>(null);
   const [loaded, setLoaded] = useState(false);
-  const [error, setError] = useState<string | null>(null);
 
-  // Load VRM
   useEffect(() => {
     let cancelled = false;
     setLoaded(false);
-    setError(null);
 
     const loader = new GLTFLoader();
     loader.register((parser) => new VRMLoaderPlugin(parser));
@@ -115,16 +85,27 @@ function VrmModel({ emotion, speaking, src }: { emotion: EmotionVector; speaking
         if (cancelled) return;
         const vrm = (gltf as any).userData.vrm as VRM | undefined;
         if (!vrm) {
-          setError('VRM not found in gltf');
+          console.error('[VRM] No VRM in gltf');
           return;
         }
-        // Apply VRMUtils fixes
+
         VRMUtils.removeUnnecessaryVertices(gltf.scene);
-        // combineSkeletons removed — incompatible with three-vrm 3.5.4, causes
-        // "scene.traverse is not a function" error. Not required for basic VRM display.
-        vrm.scene.rotation.y = Math.PI; // face the camera
+        vrm.scene.rotation.y = Math.PI;
+
+        // Pose arms down — fix T-pose
+        if (vrm.humanoid) {
+          const leftUpperArm = vrm.humanoid.getNormalizedBoneNode('leftUpperArm');
+          const rightUpperArm = vrm.humanoid.getNormalizedBoneNode('rightUpperArm');
+          if (leftUpperArm) leftUpperArm.rotation.z = -0.6;
+          if (rightUpperArm) rightUpperArm.rotation.z = 0.6;
+
+          const leftLowerArm = vrm.humanoid.getNormalizedBoneNode('leftLowerArm');
+          const rightLowerArm = vrm.humanoid.getNormalizedBoneNode('rightLowerArm');
+          if (leftLowerArm) leftLowerArm.rotation.z = -0.3;
+          if (rightLowerArm) rightLowerArm.rotation.z = 0.3;
+        }
+
         if (groupRef.current) {
-          // Clear previous model
           while (groupRef.current.children.length > 0) {
             groupRef.current.remove(groupRef.current.children[0]);
           }
@@ -132,136 +113,105 @@ function VrmModel({ emotion, speaking, src }: { emotion: EmotionVector; speaking
         }
         vrmRef.current = vrm;
         setLoaded(true);
+        console.log('[VRM] loaded successfully');
       },
       undefined,
       (err) => {
         if (cancelled) return;
-        console.error('[VrmAvatar] load failed:', err);
-        setError(err instanceof Error ? err.message : String(err));
+        console.error('[VRM] load failed:', err);
       },
     );
 
     return () => { cancelled = true; };
   }, [src]);
 
-  // Animation state — smoothed values
   const animState = useRef({
-    breathPhase: 0,
     blinkTimer: 2 + Math.random() * 3,
-    blinkPhase: 0,
     isBlinking: false,
+    blinkPhase: 0,
     mouthPhase: 0,
-    // Smoothed blendshape values (lerp toward target)
-    current: { happy: 0, angry: 0, sad: 0, relaxed: 0, surprised: 0, aa: 0, ih: 0, ou: 0, ee: 0, oh: 0 },
+    current: { happy: 0, angry: 0, sad: 0, relaxed: 0, surprised: 0, aa: 0 },
   });
 
-  // Per-frame update
   useFrame((_, delta) => {
     const vrm = vrmRef.current;
-    if (!vrm) return;
+    if (!vrm || !loaded) return;
     const t = performance.now() / 1000;
 
-    // ── Breath ── subtle vertical movement + chest expansion
-    const breath = Math.sin(t * 0.6) * 0.5 + 0.5; // 0..1, ~10s cycle
+    // Breath
     if (vrm.humanoid) {
       const spine = vrm.humanoid.getNormalizedBoneNode('spine');
-      if (spine) {
-        spine.rotation.x = breath * 0.02 - 0.01;
-      }
+      if (spine) spine.rotation.x = Math.sin(t * 0.8) * 0.02;
+
       const head = vrm.humanoid.getNormalizedBoneNode('head');
       if (head) {
-        // Subtle head sway
-        head.rotation.y = Math.sin(t * 0.4) * 0.04;
-        head.rotation.x = Math.sin(t * 0.3) * 0.02 + breath * 0.01 - 0.01;
+        head.rotation.y = Math.sin(t * 0.3) * 0.05;
+        head.rotation.x = Math.sin(t * 0.2) * 0.02;
       }
     }
 
-    // ── Blink ──
+    // Blink
     animState.current.blinkTimer -= delta;
     if (!animState.current.isBlinking && animState.current.blinkTimer < 0) {
       animState.current.isBlinking = true;
       animState.current.blinkPhase = 0;
     }
     if (animState.current.isBlinking) {
-      animState.current.blinkPhase += delta * 10; // 100ms total blink
+      animState.current.blinkPhase += delta * 8;
       if (animState.current.blinkPhase >= 1) {
         animState.current.isBlinking = false;
         animState.current.blinkTimer = 2 + Math.random() * 3;
-        setExpression(vrm, 'blink', 0);
+        setExpr(vrm, 'blink', 0);
       } else {
-        // Triangle wave: 0 → 1 → 0
-        const blinkValue = animState.current.blinkPhase < 0.5
+        const v = animState.current.blinkPhase < 0.5
           ? animState.current.blinkPhase * 2
           : (1 - animState.current.blinkPhase) * 2;
-        setExpression(vrm, 'blink', blinkValue);
+        setExpr(vrm, 'blink', v);
       }
     }
 
-    // ── Emotion blendshapes ── smooth lerp toward target
+    // Emotions
     const target = emotionToBlendshapes(emotion);
-    const lerpSpeed = 1 - Math.pow(0.001, delta); // ~smoothing per frame
+    const lerp = 1 - Math.pow(0.001, delta);
     for (const key of Object.keys(target) as Array<keyof typeof target>) {
       const cur = animState.current.current[key] as number;
       const tgt = target[key];
-      animState.current.current[key] = cur + (tgt - cur) * lerpSpeed;
-      setExpression(vrm, key as VRMExpressionPresetName, animState.current.current[key]);
+      animState.current.current[key] = cur + (tgt - cur) * lerp;
+      setExpr(vrm, key as VRMExpressionPresetName, animState.current.current[key]);
     }
 
-    // ── Lip-sync during speaking ── oscillate mouth open
+    // Lip sync
     if (speaking) {
       animState.current.mouthPhase += delta * 12;
-      const mouthValue = (Math.sin(animState.current.mouthPhase) + 1) / 2 * 0.7;
-      setExpression(vrm, 'aa', Math.max(animState.current.current.aa ?? 0, mouthValue));
+      const mouth = (Math.sin(animState.current.mouthPhase) + 1) / 2 * 0.6;
+      setExpr(vrm, 'aa', Math.max(animState.current.current.aa ?? 0, mouth));
     } else {
-      // Decay mouth
       const cur = animState.current.current.aa ?? 0;
-      animState.current.current.aa = Math.max(0, cur - delta * 2);
-      setExpression(vrm, 'aa', animState.current.current.aa);
+      animState.current.current.aa = Math.max(0, cur - delta * 3);
+      setExpr(vrm, 'aa', animState.current.current.aa);
     }
 
-    // Update VRM
+    // CRITICAL: update VRM every frame
     vrm.update(delta);
   });
-
-  if (error) {
-    return <></>;
-  }
 
   return <group ref={groupRef} />;
 }
 
-// ============================================================================
-// Helper: set expression (handles both preset names and custom)
-// ============================================================================
-function setExpression(vrm: VRM, name: VRMExpressionPresetName | string, value: number) {
+function setExpr(vrm: VRM, name: VRMExpressionPresetName | string, value: number) {
   if (!vrm.expressionManager) return;
   try {
     vrm.expressionManager.setValue(name as VRMExpressionPresetName, Math.max(0, Math.min(1, value)));
-  } catch {
-    // expression not available on this model — skip
-  }
+  } catch { /* skip */ }
 }
 
-// ============================================================================
-// Emotion → VRM blendshapes mapping
-// ============================================================================
 function emotionToBlendshapes(e: EmotionVector): Record<string, number> {
-  // VRM standard expressions:
-  //   happy, angry, sad, relaxed, surprised, blink, blinkLeft, blinkRight,
-  //   lookUp, lookDown, lookLeft, lookRight, neutral
-  //   Plus visemes: aa, ih, ou, ee, oh
-
   return {
     happy:     Math.max(0, e.joy - 0.3) * 1.2,
     angry:     Math.max(0, e.irritation - 0.2) * 1.5,
     sad:       Math.max(0, e.sadness - 0.2) * 1.3,
     relaxed:   Math.max(0, e.calm - 0.3) * 0.8,
     surprised: Math.max(0, e.curiosity - 0.5) * 1.5,
-    // Visemes default to 0 — set during lip-sync
     aa: 0,
-    ih: 0,
-    ou: 0,
-    ee: 0,
-    oh: 0,
   };
 }

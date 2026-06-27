@@ -120,7 +120,8 @@ function VrmModel({ emotion, speaking, src }: { emotion: EmotionVector; speaking
         }
         // Apply VRMUtils fixes
         VRMUtils.removeUnnecessaryVertices(gltf.scene);
-        VRMUtils.combineSkeletons(vrm);
+        // combineSkeletons removed — incompatible with three-vrm 3.5.4, causes
+        // "scene.traverse is not a function" error. Not required for basic VRM display.
         vrm.scene.rotation.y = Math.PI; // face the camera
         if (groupRef.current) {
           // Clear previous model

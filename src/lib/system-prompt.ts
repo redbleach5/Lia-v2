@@ -30,6 +30,8 @@ export type SystemPromptContext = {
   disagreementReason?: string;
   emotionalAnchors?: string;
   emotionalWarning?: string;
+  // RL action instruction — модулирует тон/стиль ответа на основе предсказанного действия
+  rlActionInstruction?: string;
 };
 
 // ============================================================================
@@ -124,6 +126,13 @@ export function buildSystemPrompt(ctx: SystemPromptContext): string {
   // Anti-pattern warning — "не бередить раны"
   if (ctx.emotionalWarning) {
     dynamicParts.push(`\n⚠ ${ctx.emotionalWarning}`);
+  }
+
+  // RL action instruction — модулирует тон/стиль ответа.
+  // Это результат работы RL-политии: модель учится выбирать оптимальное действие
+  // (тёплый ответ / деловой / краткий / с вопросом / и т.д.) на основе состояния.
+  if (ctx.rlActionInstruction) {
+    dynamicParts.push(`\nСТИЛЬ ОТВЕТА (на основе обученной политики):\n${ctx.rlActionInstruction}`);
   }
 
   if (ctx.userProfile) {

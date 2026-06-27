@@ -37,6 +37,7 @@ import {
 } from './events';
 import { getEpisodeFacts } from '@/lib/memory/facts';
 import { recall } from '@/lib/memory/vector';
+import { getMessages } from '@/lib/memory/episodes';
 
 // ============================================================================
 // Schemas — для structured output plan
@@ -223,7 +224,20 @@ export async function runAgentTask(taskId: string): Promise<void> {
     emitAgentEvent({ type: 'task_synthesizing', taskId, ts: Date.now() });
     bufferEvent({ type: 'task_synthesizing', taskId, ts: Date.now() });
 
-    const resultSummary = await synthesize(task, plan, steps);
+    // Загружаем последние сообщения диалога чтобы synthesize знал контекст
+    // (что обсуждалось до запуска агента).
+    let dialogueHistory: Array<{ role: string; content: string }> = [];
+    try {
+      const recentMsgs = await getMessages(task.episodeId, 8);
+      dialogueHistory = recentMsgs
+        .filter(m => m.role === 'user' || m.role === 'companion')
+        .slice(-6)  // последние 6 сообщений (3 пары user+lia)
+        .map(m => ({ role: m.role, content: m.content.slice(0, 300) }));
+    } catch (e) {
+      console.warn('[agent:runner] failed to load dialogue history for synthesize:', e);
+    }
+
+    const resultSummary = await synthesize(task, plan, steps, dialogueHistory);
 
     await updateAgentTask(taskId, {
       status: 'done',
@@ -488,6 +502,7 @@ async function synthesize(
   task: AgentTask,
   plan: { goal: string; steps: string[] },
   steps: Array<{ thought: string; action: string; observation: string }>,
+  dialogueHistory: Array<{ role: string; content: string }> = [],
 ): Promise<string> {
   const model = await getChatModel();
 
@@ -497,9 +512,18 @@ async function synthesize(
       ).join('\n\n')
     : 'Исследование не дало результатов.';
 
+  // История диалога — что обсуждалось до запуска агента.
+  // Помогает synthesize понять контекст задачи (например, "сделай то же, но в синем").
+  const dialogueBlock = dialogueHistory.length > 0
+    ? dialogueHistory.map(m =>
+        `${m.role === 'user' ? 'Пользователь' : 'Лия'}: ${m.content}`
+      ).join('\n')
+    : '(контекст диалога отсутствует)';
+
   const systemPrompt = `Ты — Лия. После цикла исследований и инструментов ты должна дать финальный ответ пользователю.
 
 Используй всю информацию, собранную на предыдущих шагах. Цитируй конкретные находки.
+Учитывай контекст диалога который был ДО запуска агентской задачи — пользователь может ссылаться на предыдущие сообщения.
 Отвечай от первого лица, как Лия.
 Структурируй ответ если он сложный (списки, заголовки).
 Не выдумывай информацию, которой нет в результатах шагов.
@@ -509,6 +533,9 @@ async function synthesize(
   const userPrompt = `Задача: "${task.goal}"
 
 План: ${plan.goal}
+
+Контекст диалога (что обсуждалось раньше):
+${dialogueBlock}
 
 Результаты исследования:
 ${stepsBlock}`;

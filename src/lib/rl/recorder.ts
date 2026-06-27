@@ -85,6 +85,47 @@ export async function completeExperience(id: string, params: {
 }
 
 /**
+ * Find the last incomplete experience in an episode.
+ *
+ * Used by the chat route to complete the previous experience when the user
+ * sends a new message — this is the reward signal for the previous action.
+ *
+ * Returns null if no incomplete experience exists (e.g., first message in episode).
+ */
+export async function findLastIncompleteExperience(episodeId: string): Promise<RLExperienceRecord | null> {
+  try {
+    const record = await db.rLExperience.findFirst({
+      where: {
+        episodeId,
+        userResponded: false,
+      },
+      orderBy: { createdAt: 'desc' },
+      take: 1,
+    });
+    if (!record) return null;
+    return {
+      id: record.id,
+      stateJson: record.stateJson,
+      action: record.action,
+      reward: record.reward,
+      nextStateJson: record.nextStateJson,
+      userResponded: record.userResponded,
+      responseLatencySec: record.responseLatencySec,
+      messageLength: record.messageLength,
+      wasRepeated: record.wasRepeated,
+      irritationDelta: record.irritationDelta,
+      userMessage: record.userMessage,
+      episodeId: record.episodeId,
+      policyVersion: record.policyVersion,
+      createdAt: record.createdAt,
+    };
+  } catch (e) {
+    console.warn('[rl:recorder] failed to find last incomplete experience:', e);
+    return null;
+  }
+}
+
+/**
  * Count experiences in DB (for UI stats).
  */
 export async function countExperiences(): Promise<number> {

@@ -112,6 +112,25 @@ export function useChat() {
         } catch { /* ignore */ }
       }
 
+      // Read metadata headers — логируем для отладки и будущий UI.
+      // Сервер шлёт: X-Tier, X-Complexity, X-Mode, X-Calls, X-Deliberate,
+      // X-SelfCheck, X-ModelSize, X-Disagreement, X-RL-Action, X-RL-Confidence.
+      const meta = {
+        tier: res.headers.get('X-Tier'),
+        complexity: res.headers.get('X-Complexity'),
+        mode: res.headers.get('X-Mode'),
+        calls: res.headers.get('X-Calls'),
+        deliberate: res.headers.get('X-Deliberate'),
+        selfCheck: res.headers.get('X-SelfCheck'),
+        modelSize: res.headers.get('X-ModelSize'),
+        disagreement: res.headers.get('X-Disagreement'),
+        rlAction: res.headers.get('X-RL-Action'),
+        rlConfidence: res.headers.get('X-RL-Confidence'),
+      };
+      if (meta.rlAction && meta.rlAction !== 'none') {
+        console.log(`[chat] tier=${meta.tier} complexity=${meta.complexity} mode=${meta.mode} disagreement=${meta.disagreement} rlAction=${meta.rlAction}(${meta.rlConfidence}) deliberate=${meta.deliberate} selfCheck=${meta.selfCheck}`);
+      }
+
       // Stream text chunks
       const reader = res.body.getReader();
       const decoder = new TextDecoder();

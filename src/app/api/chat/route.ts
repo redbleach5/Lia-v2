@@ -18,11 +18,12 @@ import { tools } from '@/lib/tools';
 import { db } from '@/lib/db';
 import { saveMessage, autoTitleEpisode, getMessages } from '@/lib/memory/episodes';
 import { getAllGlobalFacts, formatGlobalFactsForPrompt, getEpisodeFacts, formatEpisodeFactsForPrompt } from '@/lib/memory/facts';
+import { extractAndSaveFacts } from '@/lib/memory/fact-extraction';
 import { recall, remember, formatVectorHitsForPrompt } from '@/lib/memory/vector';
 import { listAgentTasks, formatOpenTasksForPrompt } from '@/lib/agent/task';
 import { perceive, createInitialEmotion, decayEmotion, dominantEmotion } from '@/lib/emotion';
 import type { EmotionVector } from '@/lib/personality';
-import { assessDisagreement, DISAGREEMENT_LABELS_RU } from '@/lib/personality';
+import { assessDisagreement } from '@/lib/personality';
 import {
   recordEmotionalAnchor,
   recallEmotionalAnchors,
@@ -30,7 +31,9 @@ import {
   formatEmotionalAnchorsForPrompt,
 } from '@/lib/memory/emotional-memory';
 import { buildRLState } from '@/lib/rl/types';
-import { recordExperience } from '@/lib/rl/recorder';
+import { recordExperience, completeExperience, findLastIncompleteExperience, computeRewardLocally } from '@/lib/rl/recorder';
+import { predictAction } from '@/lib/rl/inference';
+import { getActionInstruction, fallbackActionId, ACTION_LABELS_RU } from '@/lib/rl/actions';
 import { getCognitiveParams, type CapabilityProfile } from '@/lib/capability-profile';
 import { classifyTaskComplexity } from '@/lib/task-complexity';
 import { planExecution, type CognitiveMode, type ExecutionPlan, shouldDeliberate, shouldSelfCheck } from '@/lib/cognitive-depth';
@@ -97,6 +100,84 @@ export async function POST(req: NextRequest) {
     console.log(`[chat] disagreement: ${disagreement.level} — ${disagreement.reason}`);
   }
 
+  // ── 4c. RL: complete previous experience + predict action for this turn ──
+  // Это КЛЮЧЕВАЯ интеграция RL в чат:
+  //   1. Находим предыдущую незавершённую запись в этом эпизоде
+  //   2. Завершаем её с reward signals (userResponded=true, latency, length, irritationDelta)
+  //   3. Строим состояние для текущего хода
+  //   4. Вызываем predictAction (ONNX-инференс) или fallback-эвристику
+  //   5. Получаем инструкцию для промпта, модулирующую тон ответа
+  const messageTimestamp = Date.now();
+  let rlExperienceId: string | null = null;
+  let rlActionId: number = 0;
+  let rlConfidence = 0;
+  let rlActionLabel = '';
+
+  try {
+    // 1. Завершаем предыдущий опыт (если есть) — это reward signal для прошлого действия
+    const prevExperience = await findLastIncompleteExperience(episodeId);
+    if (prevExperience) {
+      const prevState = JSON.parse(prevExperience.stateJson) as number[];
+      const latencySec = Math.min(3600, Math.max(0, (messageTimestamp - prevExperience.createdAt.getTime()) / 1000));
+      const irritationDelta = perceivedEmotion.irritation - (prevState[3] ?? 0); // irritation is index 3 in state vector
+
+      const signals = {
+        userResponded: true,
+        responseLatencySec: latencySec,
+        messageLength: text.length,
+        wasRepeated: false, // TODO: detect repetition via embedding similarity
+        irritationDelta,
+        userMessage: text,
+      };
+
+      const reward = computeRewardLocally(signals, prevExperience.action);
+      await completeExperience(prevExperience.id, {
+        nextState: buildRLState({
+          emotion: perceivedEmotion,
+          drives: { curiosity: 0.5, social: 0.5, safety: 0.7, rest: 0.3 },
+          context: {
+            secondsSinceLastUser: 0,
+            episodeMessageCount: recentMessages.length + 1,
+            timeOfDay: (new Date().getHours() * 60 + new Date().getMinutes()) / (24 * 60),
+            dominantEmotionIdx: ['joy', 'curiosity', 'calm', 'irritation', 'sadness']
+              .indexOf(dominantEmotion(perceivedEmotion)),
+          },
+        }),
+        reward,
+        signals,
+      });
+      console.log(`[chat] RL: completed prev experience ${prevExperience.id.slice(0, 8)}, reward=${reward.toFixed(3)}`);
+    }
+
+    // 2. Строим состояние для текущего хода
+    const rlState = buildRLState({
+      emotion: perceivedEmotion,
+      drives: { curiosity: 0.5, social: 0.5, safety: 0.7, rest: 0.3 },
+      context: {
+        secondsSinceLastUser: 0,
+        episodeMessageCount: recentMessages.length + 2,
+        timeOfDay: (new Date().getHours() * 60 + new Date().getMinutes()) / (24 * 60),
+        dominantEmotionIdx: ['joy', 'curiosity', 'calm', 'irritation', 'sadness']
+          .indexOf(dominantEmotion(perceivedEmotion)),
+      },
+    });
+
+    // 3. Предсказываем действие через ONNX-модель (или fallback)
+    const prediction = await predictAction(rlState);
+    rlActionId = prediction.action;
+    rlConfidence = prediction.confidence;
+    rlActionLabel = ACTION_LABELS_RU[rlActionId] ?? `action_${rlActionId}`;
+
+    if (prediction.version !== null) {
+      console.log(`[chat] RL: predicted action=${rlActionLabel} (id=${rlActionId}, confidence=${rlConfidence.toFixed(2)}, v${prediction.version})`);
+    } else {
+      // Модель не загружена — используем fallback после получения ответа
+      console.log('[chat] RL: no ONNX model, will use fallback heuristic after response');
+    }
+  } catch (e) {
+    console.warn('[chat] RL inference failed (non-fatal):', e);
+  }
+
   // ── 5. Save user message ──
   const userMsg = await saveMessage(episodeId, {
     role: 'user',
@@ -141,6 +222,7 @@ export async function POST(req: NextRequest) {
     disagreementReason: disagreement.reason,
     emotionalAnchors: formatEmotionalAnchorsForPrompt(emotionalRecall.anchors) || undefined,
     emotionalWarning: emotionalRecall.warning || undefined,
+    rlActionInstruction: getActionInstruction(rlActionId, rlConfidence) || undefined,
   });
 
   // ── 7. Build messages array ──
@@ -244,9 +326,14 @@ export async function POST(req: NextRequest) {
         }).catch(() => null);
       }
 
-      // RL experience
+      // RL experience — записываем (state, action) для будущего обучения.
+      // Если ONNX-модель была загружена — используем предсказанный action.
+      // Если нет — используем fallback-эвристику на основе текста ответа.
       try {
-        const rlAction = classifyResponseAction(fullText, userMode);
+        const finalActionId = rlConfidence > 0
+          ? rlActionId  // модель предсказала
+          : fallbackActionId(fullText, userMode);  // fallback по тексту ответа
+
         const rlState = buildRLState({
           emotion: perceivedEmotion,
           drives: { curiosity: 0.5, social: 0.5, safety: 0.7, rest: 0.3 },
@@ -258,9 +345,37 @@ export async function POST(req: NextRequest) {
               .indexOf(dominantEmotion(perceivedEmotion)),
           },
         });
-        await recordExperience({ state: rlState, action: rlAction, episodeId });
+        rlExperienceId = await recordExperience({
+          state: rlState,
+          action: finalActionId,
+          episodeId,
+          // policyVersion: null means "no model was used for this prediction"
+          // (will be filled by the sidecar when it reads the record)
+          policyVersion: undefined,
+        });
+        console.log(`[chat] RL: recorded experience ${rlExperienceId.slice(0, 8)}, action=${ACTION_LABELS_RU[finalActionId] ?? finalActionId}`);
       } catch (e) {
         console.warn('[api/chat] RL experience record failed (non-fatal):', e);
+      }
+
+      // Факт-экстракция — извлекаем user.* и current.* факты из диалога.
+      // Делается в фоне, не блокирует ответ. Эвристика внутри пропускает
+      // короткие/тривиальные сообщения (см. fact-extraction.ts:shouldExtractFacts).
+      extractAndSaveFacts({
+        userMessage: text,
+        liaMessage: fullText,
+        episodeId,
+      }).catch(e => console.warn('[api/chat] fact extraction failed (non-fatal):', e));
+
+      // Self-check — проверка качества ответа (если запланирована).
+      // Работает в фоне: логирует проблемы, не блокирует стрим.
+      // В future work может стать негативным reward signal для RL.
+      if (shouldSelfCheck(plan)) {
+        runSelfCheck({
+          userMessage: text,
+          liaResponse: fullText,
+          episodeId,
+        }).catch(e => console.warn('[api/chat] self-check failed (non-fatal):', e));
       }
     },
     onStepFinish: ({ toolCalls: tcs, toolResults: trs }) => {
@@ -297,6 +412,8 @@ export async function POST(req: NextRequest) {
       'X-SelfCheck': String(plan.selfCheck),
       'X-ModelSize': String(profile?.modelSize ?? 0),
       'X-Disagreement': disagreement.level,
+      'X-RL-Action': rlActionLabel || 'none',
+      'X-RL-Confidence': rlConfidence.toFixed(2),
     },
   });
 }
@@ -335,6 +452,75 @@ async function runDeliberate(userMessage: string, emotion: EmotionVector, tier: 
 }
 
 // ============================================================================
+// Self-check step — проверка ответа на ошибки ПОСЛЕ его генерации.
+//
+// Внимание: в стриминг-режиме ответ уже отправлен пользователю к моменту
+// self-check. Поэтому self-check работает в режиме "quality log" —
+// если найдены проблемы, они логируются и могут быть использованы для
+// RL reward (негативный сигнал). Полная ревизия ответа возможна только
+// в не-стриминг режиме (future work).
+// ============================================================================
+async function runSelfCheck(params: {
+  userMessage: string;
+  liaResponse: string;
+  episodeId: string;
+}): Promise<{ issues: string[]; severity: 'ok' | 'minor' | 'major' }> {
+  const model = await getChatModel();
+
+  const prompt = `Проверь ответ ассистента на вопрос пользователя.
+
+Вопрос пользователя: "${params.userMessage.slice(0, 500)}"
+
+Ответ ассистента: "${params.liaResponse.slice(0, 1500)}"
+
+Проверь:
+1. Есть ли фактические ошибки?
+2. Есть ли противоречия?
+3. Ответил ли на вопрос, или ушёл от темы?
+4. Есть ли вредный/опасный совет?
+5. Не слишком ли длинный/короткий?
+
+Верни строго JSON:
+{"issues": ["описание проблемы 1", "описание проблемы 2"], "severity": "ok|minor|major"}
+- "ok" — проблем нет
+- "minor" — мелкие проблемы (длинноват, не совсем в тему)
+- "major" — серьёзные проблемы (факт. ошибка, вредный совет, не ответил)`;
+
+  try {
+    const result = streamText({
+      model,
+      system: 'Ты — модуль самопроверки. Возвращай только валидный JSON.',
+      messages: [{ role: 'user', content: prompt }],
+      temperature: 0.2,
+      maxOutputTokens: 200,
+    });
+    const text = await result.text;
+
+    const jsonMatch = text.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) return { issues: [], severity: 'ok' };
+
+    const parsed = JSON.parse(jsonMatch[0]) as {
+      issues?: string[];
+      severity?: string;
+    };
+
+    const issues = Array.isArray(parsed.issues) ? parsed.issues.filter(i => typeof i === 'string') : [];
+    const severity = ['ok', 'minor', 'major'].includes(parsed.severity ?? '')
+      ? (parsed.severity as 'ok' | 'minor' | 'major')
+      : 'ok';
+
+    if (severity !== 'ok') {
+      console.log(`[chat] self-check: ${severity} — ${issues.join('; ')}`);
+    }
+
+    return { issues, severity };
+  } catch (e) {
+    console.warn('[chat] self-check failed:', e);
+    return { issues: [], severity: 'ok' };
+  }
+}
+
+// ============================================================================
 // Helpers
 // ============================================================================
 function safeParseEmotion(json: string): EmotionVector | null {
@@ -352,20 +538,4 @@ function safeParseEmotion(json: string): EmotionVector | null {
   } catch {
     return null;
   }
-}
-
-function classifyResponseAction(response: string, mode: string): number {
-  const trimmed = response.trim();
-  const len = trimmed.length;
-  const lower = trimmed.toLowerCase();
-
-  if (mode === 'agent') return 2;
-  if (len < 100) return 7;
-  if (len > 800) return 8;
-  if (lower.includes('?') || /\b(а ты|как ты|что ты|расскажи о себе)\b/i.test(lower)) return 3;
-  if (/\b(рада|скучала|хорошо|милая|тепло|обнимаю)\b/i.test(lower)) return 1;
-  if (/\b(могу помочь|хочешь я|давай я|помочь с)\b/i.test(lower)) return 4;
-  if (/\b(я подумала|мне кажется|знаешь что|я тут подумала)\b/i.test(lower)) return 5;
-  if (/\b(шучу|ха-ха|смеюсь|прикол|забавно)\b/i.test(lower)) return 6;
-  return 2;
 }

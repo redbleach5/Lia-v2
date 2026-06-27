@@ -164,11 +164,12 @@ async def predict(req: PredictRequest):
     state_tensor = torch.tensor(req.state, dtype=torch.float32)
     action, confidence = model.predict(state_tensor)
 
-    # Get value too
+    # Get value too — value head of the policy network.
+    # Если model() падает (например, не реализован value head), value = 0.0.
+    value = 0.0
     with __import__("contextlib").suppress(Exception):
         _, value_tensor = model(state_tensor.unsqueeze(0))
         value = float(value_tensor.item())
-    value = 0.0
 
     from rl.model import DEFAULT_ACTIONS
     return PredictResponse(

@@ -129,7 +129,6 @@ function Scene({
         position={lights.keyLight.position}
         intensity={lights.keyLight.intensity * lightScale}
         color={lights.keyLight.color}
-        castShadow
       />
       <directionalLight
         position={lights.fillLight.position}
@@ -166,7 +165,7 @@ function Scene({
 }
 
 // ============================================================================
-// Платформа — 4 формы (disc/hexagon/ring/pedestal) + 4 анимации кольца
+// Платформа — 4 формы + 4 анимации кольца
 // ============================================================================
 function Platform({
   colors,
@@ -191,7 +190,6 @@ function Platform({
 
   useFrame(() => {
     const t = performance.now() / 1000;
-    // Базовая пульсация для всех анимаций кроме 'solid'
     const pulse = config.ringAnimation === 'pulse'
       ? 0.5 + Math.sin(t * 1.5) * 0.25
       : config.ringAnimation === 'breathing'
@@ -224,24 +222,17 @@ function Platform({
         0.08,
       );
     }
-    // Вращение кольца
     if (ringGroupRef.current && config.ringAnimation === 'rotate') {
       ringGroupRef.current.rotation.y += 0.01 * config.rotateSpeed;
     }
-    // Контактная тень — лёгкая пульсация размера в такт дыханию аватара
     if (shadowMatRef.current) {
       const breath = 0.95 + Math.sin(t * 0.8) * 0.05;
-      shadowMatRef.current.opacity = THREE.MathUtils.lerp(
-        shadowMatRef.current.opacity,
-        0.25 * breath,
-        0.08,
-      );
+      shadowMatRef.current.opacity = THREE.MathUtils.lerp(shadowMatRef.current.opacity, 0.25 * breath, 0.08);
     }
   });
 
   return (
     <group>
-      {/* ── Геометрия платформы зависит от формы ── */}
       <PlatformGeometry shape={config.shape} radius={radius} height={height}>
         <meshStandardMaterial
           ref={baseMatRef}
@@ -253,7 +244,6 @@ function Platform({
         />
       </PlatformGeometry>
 
-      {/* ── Внешнее светящееся кольцо (кроме ring — там только кольцо) ── */}
       <group ref={ringGroupRef}>
         <mesh position={[0, height + 0.005, 0]}>
           <torusGeometry args={[radius, 0.012, 16, 96]} />
@@ -268,7 +258,6 @@ function Platform({
           />
         </mesh>
 
-        {/* Внутреннее светящееся кольцо */}
         {config.showInnerRing && (
           <mesh position={[0, height + 0.005, 0]}>
             <torusGeometry args={[radius * 0.76, 0.006, 12, 64]} />
@@ -285,7 +274,6 @@ function Platform({
         )}
       </group>
 
-      {/* Мягкое свечение под платформой (halo на полу) */}
       {config.showHalo && (
         <mesh position={[0, 0.001, 0]} rotation={[-Math.PI / 2, 0, 0]}>
           <circleGeometry args={[radius * 1.4, 64]} />
@@ -300,7 +288,6 @@ function Platform({
         </mesh>
       )}
 
-      {/* Контактная тень под аватаром — мягкий тёмный диск */}
       {config.showShadow && (
         <mesh position={[0, 0.012, 0]} rotation={[-Math.PI / 2, 0, 0]}>
           <circleGeometry args={[radius * 0.55, 32]} />
@@ -333,7 +320,6 @@ function PlatformGeometry({
   children: React.ReactNode;
 }) {
   if (shape === 'ring') {
-    // Только тонкий диск-кольцо, без заполнения
     return (
       <mesh position={[0, height / 2, 0]}>
         <cylinderGeometry args={[radius, radius, height, 64, 1, true]} />
@@ -342,7 +328,6 @@ function PlatformGeometry({
     );
   }
   if (shape === 'hexagon') {
-    // Шестиугольная призма — 6 граней
     return (
       <mesh position={[0, height / 2, 0]} rotation={[0, Math.PI / 6, 0]}>
         <cylinderGeometry args={[radius, radius * 1.05, height, 6]} />
@@ -351,15 +336,12 @@ function PlatformGeometry({
     );
   }
   if (shape === 'pedestal') {
-    // Пьедестал — высокий диск сверху + широкое основание снизу
     return (
       <group>
-        {/* Верхняя часть — диск на высоте */}
         <mesh position={[0, height, 0]}>
           <cylinderGeometry args={[radius, radius, 0.03, 64]} />
           {children}
         </mesh>
-        {/* Основание — шире и ниже */}
         <mesh position={[0, height * 0.25, 0]}>
           <cylinderGeometry args={[radius * 1.15, radius * 1.25, height * 0.5, 64]} />
           {children}
@@ -367,13 +349,58 @@ function PlatformGeometry({
       </group>
     );
   }
-  // disc — классический круглый диск (по умолчанию)
   return (
     <mesh position={[0, height / 2, 0]}>
       <cylinderGeometry args={[radius, radius + 0.04, height, 64]} />
       {children}
     </mesh>
   );
+}
+
+// ============================================================================
+// BoneBases — все базовые rotations/positions для костей, которые
+// мы модифицируем в useFrame. Сохраняются ОДИН раз после применения позы.
+// Каждая анимация в useFrame использует absolute = base + delta,
+// а не += (которая накапливается и ломает позу).
+// ============================================================================
+type BoneBases = {
+  // hips
+  hipsPosX: number;
+  hipsPosY: number;
+  hipsRotX: number;
+  hipsRotY: number;
+  hipsRotZ: number;
+  // spine
+  spineRotX: number;
+  spineRotY: number;
+  spineRotZ: number;
+  // head
+  headRotX: number;
+  headRotY: number;
+  headRotZ: number;
+  // shoulders
+  leftShoulderRotZ: number;
+  rightShoulderRotZ: number;
+  // upper arms
+  leftUpperArmRotX: number;
+  leftUpperArmRotZ: number;
+  rightUpperArmRotX: number;
+  rightUpperArmRotZ: number;
+  // upper legs (для weightShift)
+  leftUpperLegRotZ: number;
+  rightUpperLegRotZ: number;
+};
+
+function createEmptyBases(): BoneBases {
+  return {
+    hipsPosX: 0, hipsPosY: 0, hipsRotX: 0, hipsRotY: 0, hipsRotZ: 0,
+    spineRotX: 0, spineRotY: 0, spineRotZ: 0,
+    headRotX: 0, headRotY: 0, headRotZ: 0,
+    leftShoulderRotZ: 0, rightShoulderRotZ: 0,
+    leftUpperArmRotX: 0, leftUpperArmRotZ: 0,
+    rightUpperArmRotX: 0, rightUpperArmRotZ: 0,
+    leftUpperLegRotZ: 0, rightUpperLegRotZ: 0,
+  };
 }
 
 // ============================================================================
@@ -392,10 +419,13 @@ function VrmModel({
 }) {
   const groupRef = useRef<THREE.Group>(null);
   const vrmRef = useRef<VRM | null>(null);
+  const basesRef = useRef<BoneBases>(createEmptyBases());
   const [loaded, setLoaded] = useState(false);
   const [loadFailed, setLoadFailed] = useState(false);
 
-  // При смене src или позы — перезагружаем VRM
+  // ── Загрузка VRM + применение позы + сохранение баз ──
+  // ВСЁ в одном useEffect, чтобы гарантировать порядок:
+  //   1. load → 2. resetValues → 3. apply pose → 4. capture bases
   useEffect(() => {
     let cancelled = false;
     setLoaded(false);
@@ -418,27 +448,25 @@ function VrmModel({
         VRMUtils.removeUnnecessaryVertices(gltf.scene);
         vrm.scene.rotation.y = 0;
 
+        // Сброс морфов
         if (vrm.expressionManager) {
           vrm.expressionManager.resetValues();
         }
 
-        // Применяем позу рук
+        // ── Применяем позу рук ──
         const pose = ARM_POSES[config.body.armPose];
-        if (vrm.humanoid) {
-          const leftUpperArm = vrm.humanoid.getNormalizedBoneNode('leftUpperArm');
-          const rightUpperArm = vrm.humanoid.getNormalizedBoneNode('rightUpperArm');
-          if (leftUpperArm) leftUpperArm.rotation.z = pose.leftUpperArmZ;
-          if (rightUpperArm) rightUpperArm.rotation.z = pose.rightUpperArmZ;
-
-          const leftLowerArm = vrm.humanoid.getNormalizedBoneNode('leftLowerArm');
-          const rightLowerArm = vrm.humanoid.getNormalizedBoneNode('rightLowerArm');
-          if (leftLowerArm) leftLowerArm.rotation.x = pose.leftLowerArmX;
-          if (rightLowerArm) rightLowerArm.rotation.x = pose.rightLowerArmX;
-
-          const leftHand = vrm.humanoid.getNormalizedBoneNode('leftHand');
-          const rightHand = vrm.humanoid.getNormalizedBoneNode('rightHand');
-          if (leftHand) leftHand.rotation.z = pose.leftHandZ;
-          if (rightHand) rightHand.rotation.z = pose.rightHandZ;
+        const humanoid = vrm.humanoid;
+        if (humanoid) {
+          const setBoneRot = (name: string, axis: 'x' | 'y' | 'z', value: number) => {
+            const node = humanoid.getNormalizedBoneNode(name as never);
+            if (node) node.rotation[axis] = value;
+          };
+          setBoneRot('leftUpperArm', 'z', pose.leftUpperArmZ);
+          setBoneRot('rightUpperArm', 'z', pose.rightUpperArmZ);
+          setBoneRot('leftLowerArm', 'x', pose.leftLowerArmX);
+          setBoneRot('rightLowerArm', 'x', pose.rightLowerArmX);
+          setBoneRot('leftHand', 'z', pose.leftHandZ);
+          setBoneRot('rightHand', 'z', pose.rightHandZ);
         }
 
         vrm.scene.scale.setScalar(config.body.scale);
@@ -451,6 +479,60 @@ function VrmModel({
           groupRef.current.add(vrm.scene);
         }
         vrmRef.current = vrm;
+
+        // ── Сохраняем базы ВСЕХ костей, которые будем модифицировать ──
+        // Делаем это ПОСЛЕ применения позы, чтобы базы включали выбранную позу рук.
+        if (humanoid) {
+          const getBone = (name: string) => humanoid.getNormalizedBoneNode(name as never);
+          const hips = getBone('hips');
+          const spine = getBone('spine');
+          const head = getBone('head');
+          const leftShoulder = getBone('leftShoulder');
+          const rightShoulder = getBone('rightShoulder');
+          const leftUpperArm = getBone('leftUpperArm');
+          const rightUpperArm = getBone('rightUpperArm');
+          const leftUpperLeg = getBone('leftUpperLeg');
+          const rightUpperLeg = getBone('rightUpperLeg');
+
+          const b = basesRef.current;
+          if (hips) {
+            b.hipsPosX = hips.position.x;
+            b.hipsPosY = hips.position.y;
+            b.hipsRotX = hips.rotation.x;
+            b.hipsRotY = hips.rotation.y;
+            b.hipsRotZ = hips.rotation.z;
+          }
+          if (spine) {
+            b.spineRotX = spine.rotation.x;
+            b.spineRotY = spine.rotation.y;
+            b.spineRotZ = spine.rotation.z;
+          }
+          if (head) {
+            b.headRotX = head.rotation.x;
+            b.headRotY = head.rotation.y;
+            b.headRotZ = head.rotation.z;
+          }
+          if (leftShoulder) b.leftShoulderRotZ = leftShoulder.rotation.z;
+          if (rightShoulder) b.rightShoulderRotZ = rightShoulder.rotation.z;
+          if (leftUpperArm) {
+            b.leftUpperArmRotX = leftUpperArm.rotation.x;
+            b.leftUpperArmRotZ = leftUpperArm.rotation.z;
+          }
+          if (rightUpperArm) {
+            b.rightUpperArmRotX = rightUpperArm.rotation.x;
+            b.rightUpperArmRotZ = rightUpperArm.rotation.z;
+          }
+          if (leftUpperLeg) b.leftUpperLegRotZ = leftUpperLeg.rotation.z;
+          if (rightUpperLeg) b.rightUpperLegRotZ = rightUpperLeg.rotation.z;
+
+          console.log('[VRM] pose applied, bases captured:', {
+            armPose: config.body.armPose,
+            leftUpperArmRotZ: b.leftUpperArmRotZ.toFixed(3),
+            rightUpperArmRotZ: b.rightUpperArmRotZ.toFixed(3),
+            hipsPosY: b.hipsPosY.toFixed(3),
+          });
+        }
+
         setLoaded(true);
         console.log('[VRM] loaded successfully, pose:', config.body.armPose);
       },
@@ -466,9 +548,6 @@ function VrmModel({
   }, [src, config.body.armPose, config.body.scale, config.body.yOffset]);
 
   // ── Состояние анимаций ──
-  // Каждый канал — отдельное значение, чтобы их можно было комбинировать без конфликтов.
-  // phaseX — фаза для синусоиды (накапливается со временем).
-  // baseRotationX — сохранённая базовая ротация кости (для возврата к позе после эмоции).
   const animState = useRef({
     blinkTimer: 2 + Math.random() * 3,
     isBlinking: false,
@@ -481,39 +560,25 @@ function VrmModel({
     targetGazeX: 0,
     targetGazeY: 0,
     current: { happy: 0, angry: 0, sad: 0, relaxed: 0, surprised: 0 },
-    // Фазы для разных частот движения
     breathPhase: 0,
     swayPhase: 0,
     armPhase: 0,
     weightPhase: 0,
     headPhase: 0,
-    // Базовые ротации костей (сохраняем при загрузке, возвращаемся к ним)
-    baseSpineRotX: 0,
-    baseSpineRotY: 0,
-    baseHeadRotX: 0,
-    baseHeadRotY: 0,
-    baseLeftUpperArmZ: 0,
-    baseRightUpperArmZ: 0,
-    baseHipsRotY: 0,
-    baseLeftShoulderRotZ: 0,
-    baseRightShoulderRotZ: 0,
   });
 
-  // ── Отслеживание позиции мыши для gaze follow ──
+  // ── Gaze follow — отслеживание мыши ──
   const mouseRef = useRef({ x: 0, y: 0, hasMouse: false });
   const { gl } = useThree();
   useEffect(() => {
     const canvas = gl.domElement;
     const onMouseMove = (e: MouseEvent) => {
       const rect = canvas.getBoundingClientRect();
-      // Нормализованные координаты -1..1 относительно центра canvas
       mouseRef.current.x = ((e.clientX - rect.left) / rect.width) * 2 - 1;
       mouseRef.current.y = -(((e.clientY - rect.top) / rect.height) * 2 - 1);
       mouseRef.current.hasMouse = true;
     };
-    const onMouseLeave = () => {
-      mouseRef.current.hasMouse = false;
-    };
+    const onMouseLeave = () => { mouseRef.current.hasMouse = false; };
     canvas.addEventListener('mousemove', onMouseMove);
     canvas.addEventListener('mouseleave', onMouseLeave);
     return () => {
@@ -522,169 +587,191 @@ function VrmModel({
     };
   }, [gl]);
 
-  // Сохраняем базовые ротации костей после загрузки VRM — нужно для корректного возврата
-  // к исходной позе при отключении анимаций
-  useEffect(() => {
-    if (!loaded) return;
-    const vrm = vrmRef.current;
-    if (!vrm?.humanoid) return;
-
-    const spine = vrm.humanoid.getNormalizedBoneNode('spine');
-    const head = vrm.humanoid.getNormalizedBoneNode('head');
-    const hips = vrm.humanoid.getNormalizedBoneNode('hips');
-    const leftUpperArm = vrm.humanoid.getNormalizedBoneNode('leftUpperArm');
-    const rightUpperArm = vrm.humanoid.getNormalizedBoneNode('rightUpperArm');
-    const leftShoulder = vrm.humanoid.getNormalizedBoneNode('leftShoulder');
-    const rightShoulder = vrm.humanoid.getNormalizedBoneNode('rightShoulder');
-
-    if (spine) {
-      animState.current.baseSpineRotX = spine.rotation.x;
-      animState.current.baseSpineRotY = spine.rotation.y;
-    }
-    if (head) {
-      animState.current.baseHeadRotX = head.rotation.x;
-      animState.current.baseHeadRotY = head.rotation.y;
-    }
-    if (hips) animState.current.baseHipsRotY = hips.rotation.y;
-    if (leftUpperArm) animState.current.baseLeftUpperArmZ = leftUpperArm.rotation.z;
-    if (rightUpperArm) animState.current.baseRightUpperArmZ = rightUpperArm.rotation.z;
-    if (leftShoulder) animState.current.baseLeftShoulderRotZ = leftShoulder.rotation.z;
-    if (rightShoulder) animState.current.baseRightShoulderRotZ = rightShoulder.rotation.z;
-  }, [loaded]);
-
+  // ── Главный цикл анимации ──
+  // АРХИТЕКТУРА: каждый кадр начинаем с базовых значений, потом накладываем
+  // все активные анимации как absolute = base + delta. Никаких += !
+  // Это гарантирует, что поза не «уплывает» со временем и что выключение
+  // любой анимации мгновенно возвращает кость к базе.
   useFrame((_, delta) => {
     const vrm = vrmRef.current;
     if (!vrm || !loaded) return;
+    const humanoid = vrm.humanoid;
+    if (!humanoid) return;
     const cfg = config.animation;
-    // idleFrequency — множитель скорости всех idle-анимаций. 1.0 = норма.
     const freq = cfg.idleFrequency;
+    const b = basesRef.current;
+    const t = performance.now() / 1000;
 
-    // Накапливаем фазы — каждый канал со своей частотой, чтобы движения не были синхронны
+    // Накапливаем фазы
     animState.current.breathPhase += delta * 0.8 * freq;
     animState.current.swayPhase += delta * 0.35 * freq;
     animState.current.armPhase += delta * 0.5 * freq;
     animState.current.weightPhase += delta * 0.18 * freq;
     animState.current.headPhase += delta * 0.28 * freq;
 
-    // ── Дыхание — спина + плечи ──
-    if (cfg.breathing && vrm.humanoid) {
-      const spine = vrm.humanoid.getNormalizedBoneNode('spine');
+    // Получаем кости один раз
+    const hips = humanoid.getNormalizedBoneNode('hips' as never);
+    const spine = humanoid.getNormalizedBoneNode('spine' as never);
+    const head = humanoid.getNormalizedBoneNode('head' as never);
+    const leftShoulder = humanoid.getNormalizedBoneNode('leftShoulder' as never);
+    const rightShoulder = humanoid.getNormalizedBoneNode('rightShoulder' as never);
+    const leftUpperArm = humanoid.getNormalizedBoneNode('leftUpperArm' as never);
+    const rightUpperArm = humanoid.getNormalizedBoneNode('rightUpperArm' as never);
+    const leftUpperLeg = humanoid.getNormalizedBoneNode('leftUpperLeg' as never);
+    const rightUpperLeg = humanoid.getNormalizedBoneNode('rightUpperLeg' as never);
+
+    // ── Шаг 1: сброс ВСЕХ модифицируемых костей к базе ──
+    // Это гарантирует, что выключение любой анимации мгновенно возвращает позу.
+    if (hips) {
+      hips.position.x = b.hipsPosX;
+      hips.position.y = b.hipsPosY;
+      hips.rotation.x = b.hipsRotX;
+      hips.rotation.y = b.hipsRotY;
+      hips.rotation.z = b.hipsRotZ;
+    }
+    if (spine) {
+      spine.rotation.x = b.spineRotX;
+      spine.rotation.y = b.spineRotY;
+      spine.rotation.z = b.spineRotZ;
+    }
+    if (head) {
+      head.rotation.x = b.headRotX;
+      head.rotation.y = b.headRotY;
+      head.rotation.z = b.headRotZ;
+    }
+    if (leftShoulder) leftShoulder.rotation.z = b.leftShoulderRotZ;
+    if (rightShoulder) rightShoulder.rotation.z = b.rightShoulderRotZ;
+    if (leftUpperArm) {
+      leftUpperArm.rotation.x = b.leftUpperArmRotX;
+      leftUpperArm.rotation.z = b.leftUpperArmRotZ;
+    }
+    if (rightUpperArm) {
+      rightUpperArm.rotation.x = b.rightUpperArmRotX;
+      rightUpperArm.rotation.z = b.rightUpperArmRotZ;
+    }
+    if (leftUpperLeg) leftUpperLeg.rotation.z = b.leftUpperLegRotZ;
+    if (rightUpperLeg) rightUpperLeg.rotation.z = b.rightUpperLegRotZ;
+
+    // ── Шаг 2: дыхание (absolute = base + delta) ──
+    if (cfg.breathing) {
+      const breath = Math.sin(animState.current.breathPhase);
       if (spine) {
-        const breath = Math.sin(animState.current.breathPhase) * 0.025;
-        spine.rotation.x = animState.current.baseSpineRotX + breath;
-        // Лёгкое боковое движение при дыхании
-        spine.rotation.z = Math.sin(animState.current.breathPhase * 0.5) * 0.008;
+        spine.rotation.x = b.spineRotX + breath * 0.025;
+        spine.rotation.z = b.spineRotZ + Math.sin(animState.current.breathPhase * 0.5) * 0.008;
       }
-      // Плечи слегка поднимаются на вдохе
-      const leftShoulder = vrm.humanoid.getNormalizedBoneNode('leftShoulder');
-      const rightShoulder = vrm.humanoid.getNormalizedBoneNode('rightShoulder');
-      const shoulderLift = Math.sin(animState.current.breathPhase) * 0.015;
-      if (leftShoulder) leftShoulder.rotation.z = animState.current.baseLeftShoulderRotZ + shoulderLift;
-      if (rightShoulder) rightShoulder.rotation.z = animState.current.baseRightShoulderRotZ - shoulderLift;
+      if (leftShoulder) leftShoulder.rotation.z = b.leftShoulderRotZ + breath * 0.015;
+      if (rightShoulder) rightShoulder.rotation.z = b.rightShoulderRotZ - breath * 0.015;
     }
 
-    // ── Покачивание всем телом (бёдра + плечи в противофазе) ──
-    if (cfg.bodySway && vrm.humanoid) {
-      const hips = vrm.humanoid.getNormalizedBoneNode('hips');
+    // ── Шаг 3: покачивание телом (absolute) ──
+    if (cfg.bodySway) {
+      const sway = Math.sin(animState.current.swayPhase);
       if (hips) {
-        hips.rotation.y = animState.current.baseHipsRotY + Math.sin(animState.current.swayPhase) * 0.04;
-        hips.rotation.z = Math.sin(animState.current.swayPhase * 0.7) * 0.015;
+        hips.rotation.y = b.hipsRotY + sway * 0.04;
+        hips.rotation.z = b.hipsRotZ + Math.sin(animState.current.swayPhase * 0.7) * 0.015;
       }
-      const spine = vrm.humanoid.getNormalizedBoneNode('spine');
       if (spine) {
-        // Спина слегка компенсирует движение бёдер (как при реальной ходьбе)
-        spine.rotation.y = animState.current.baseSpineRotY + Math.sin(animState.current.swayPhase + Math.PI) * 0.02;
+        spine.rotation.y = b.spineRotY + Math.sin(animState.current.swayPhase + Math.PI) * 0.02;
       }
     }
 
-    // ── Перенос веса с ноги на ногу (медленный цикл) ──
-    if (cfg.weightShift && vrm.humanoid) {
-      const hips = vrm.humanoid.getNormalizedBoneNode('hips');
-      if (hips) {
-        // Смещение бёдер по X + наклон
-        const shift = Math.sin(animState.current.weightPhase) * 0.025;
-        hips.position.x = shift;
-      }
-      const leftUpperLeg = vrm.humanoid.getNormalizedBoneNode('leftUpperLeg');
-      const rightUpperLeg = vrm.humanoid.getNormalizedBoneNode('rightUpperLeg');
-      const weight = Math.sin(animState.current.weightPhase);
-      if (leftUpperLeg) leftUpperLeg.rotation.z = weight * 0.02;
-      if (rightUpperLeg) rightUpperLeg.rotation.z = weight * 0.02;
+    // ── Шаг 4: перенос веса (absolute) ──
+    if (cfg.weightShift) {
+      const shift = Math.sin(animState.current.weightPhase);
+      if (hips) hips.position.x = b.hipsPosX + shift * 0.025;
+      if (leftUpperLeg) leftUpperLeg.rotation.z = b.leftUpperLegRotZ + shift * 0.02;
+      if (rightUpperLeg) rightUpperLeg.rotation.z = b.rightUpperLegRotZ + shift * 0.02;
     }
 
-    // ── Микро-движения рук (как при лёгком покачивании) ──
-    if (cfg.armSway && vrm.humanoid) {
-      const leftUpperArm = vrm.humanoid.getNormalizedBoneNode('leftUpperArm');
-      const rightUpperArm = vrm.humanoid.getNormalizedBoneNode('rightUpperArm');
-      // Руки качаются в противофазе с бёдрами
-      const armSway = Math.sin(animState.current.armPhase) * 0.04;
+    // ── Шаг 5: микро-движения рук (absolute) ──
+    if (cfg.armSway) {
+      const armSway1 = Math.sin(animState.current.armPhase) * 0.04;
       const armSway2 = Math.sin(animState.current.armPhase + Math.PI) * 0.04;
       if (leftUpperArm) {
-        leftUpperArm.rotation.z = animState.current.baseLeftUpperArmZ + armSway;
-        leftUpperArm.rotation.x = Math.sin(animState.current.armPhase * 0.7) * 0.02;
+        leftUpperArm.rotation.z = b.leftUpperArmRotZ + armSway1;
+        leftUpperArm.rotation.x = b.leftUpperArmRotX + Math.sin(animState.current.armPhase * 0.7) * 0.02;
       }
       if (rightUpperArm) {
-        rightUpperArm.rotation.z = animState.current.baseRightUpperArmZ + armSway2;
-        rightUpperArm.rotation.x = Math.sin(animState.current.armPhase * 0.7 + Math.PI) * 0.02;
+        rightUpperArm.rotation.z = b.rightUpperArmRotZ + armSway2;
+        rightUpperArm.rotation.x = b.rightUpperArmRotX + Math.sin(animState.current.armPhase * 0.7 + Math.PI) * 0.02;
       }
     }
 
-    // ── Эмоциональная поза — изменения костей под эмоцию ──
-    if (cfg.emotionPose && vrm.humanoid) {
-      applyEmotionPose(vrm, emotion, animState.current, delta);
-    }
-
-    // ── Покачивание головой + gaze follow ──
-    if (vrm.humanoid) {
-      const head = vrm.humanoid.getNormalizedBoneNode('head');
-      if (head) {
-        if (cfg.headSway) {
-          // Базовое покачивание головой — независимый ритм от тела
-          const headY = Math.sin(animState.current.headPhase) * 0.08;
-          const headX = Math.sin(animState.current.headPhase * 0.6) * 0.03;
-          // Сохраняем базовое + добавляем эмоциональное + idle
-          head.rotation.y = animState.current.baseHeadRotY + headY;
-          head.rotation.x = animState.current.baseHeadRotX + headX;
-        }
-        // Gaze follow — глаза/голова следуют за курсором
-        if (cfg.gazeFollow && mouseRef.current.hasMouse) {
-          // Плавно интерполируем к целевому направлению взгляда
-          animState.current.targetGazeX = mouseRef.current.x * 0.15;
-          animState.current.targetGazeY = mouseRef.current.y * 0.10;
-          animState.current.gazeX = THREE.MathUtils.lerp(animState.current.gazeX, animState.current.targetGazeX, 0.05);
-          animState.current.gazeY = THREE.MathUtils.lerp(animState.current.gazeY, animState.current.targetGazeY, 0.05);
-          head.rotation.y += animState.current.gazeX;
-          head.rotation.x += animState.current.gazeY;
-        } else {
-          // Без мыши — плавно возвращаем взгляд к центру
-          animState.current.gazeX = THREE.MathUtils.lerp(animState.current.gazeX, 0, 0.05);
-          animState.current.gazeY = THREE.MathUtils.lerp(animState.current.gazeY, 0, 0.05);
-        }
+    // ── Шаг 6: эмоциональная поза (absolute = base + delta) ──
+    // Все вычисления — относительно базы, никаких +=.
+    if (cfg.emotionPose) {
+      // Joy — лёгкое подпрыгивание
+      if (emotion.joy > 0.6 && hips) {
+        const bounce = Math.sin(t * 2.5) * 0.015 * (emotion.joy - 0.5);
+        hips.position.y = b.hipsPosY + bounce;
+      }
+      // Sadness — плечи вперёд, голова вниз
+      if (emotion.sadness > 0.4) {
+        const intensity = (emotion.sadness - 0.3) * 0.5;
+        if (spine) spine.rotation.x = b.spineRotX + intensity * 0.08;
+        if (head) head.rotation.x = b.headRotX + intensity * 0.1;
+        if (leftShoulder) leftShoulder.rotation.z = b.leftShoulderRotZ + intensity * 0.05;
+        if (rightShoulder) rightShoulder.rotation.z = b.rightShoulderRotZ - intensity * 0.05;
+      }
+      // Irritation — подбородок вверх, руки ближе к корпусу
+      if (emotion.irritation > 0.4) {
+        const intensity = (emotion.irritation - 0.3) * 0.5;
+        if (head) head.rotation.x = b.headRotX - intensity * 0.06;
+        if (leftUpperArm) leftUpperArm.rotation.z = b.leftUpperArmRotZ + intensity * 0.04;
+        if (rightUpperArm) rightUpperArm.rotation.z = b.rightUpperArmRotZ - intensity * 0.04;
+      }
+      // Curiosity — наклон головы вбок
+      if (emotion.curiosity > 0.6 && head) {
+        const intensity = (emotion.curiosity - 0.5) * 0.3;
+        head.rotation.z = b.headRotZ + Math.sin(t * 0.4) * intensity * 0.08;
+      }
+      // Calm — расслабленные плечи
+      if (emotion.calm > 0.6) {
+        const intensity = (emotion.calm - 0.5) * 0.2;
+        if (leftShoulder) leftShoulder.rotation.z = b.leftShoulderRotZ - intensity * 0.03;
+        if (rightShoulder) rightShoulder.rotation.z = b.rightShoulderRotZ + intensity * 0.03;
       }
     }
 
-    // ── Моргание (с редкими двойными морганиями) ──
+    // ── Шаг 7: покачивание головой + gaze follow (absolute) ──
+    if (cfg.headSway && head) {
+      const headY = Math.sin(animState.current.headPhase) * 0.08;
+      const headX = Math.sin(animState.current.headPhase * 0.6) * 0.03;
+      head.rotation.y = b.headRotY + headY;
+      head.rotation.x = b.headRotX + headX;
+    }
+    if (cfg.gazeFollow && head) {
+      if (mouseRef.current.hasMouse) {
+        animState.current.targetGazeX = mouseRef.current.x * 0.15;
+        animState.current.targetGazeY = mouseRef.current.y * 0.10;
+      } else {
+        animState.current.targetGazeX = 0;
+        animState.current.targetGazeY = 0;
+      }
+      animState.current.gazeX = THREE.MathUtils.lerp(animState.current.gazeX, animState.current.targetGazeX, 0.05);
+      animState.current.gazeY = THREE.MathUtils.lerp(animState.current.gazeY, animState.current.targetGazeY, 0.05);
+      head.rotation.y += animState.current.gazeX;
+      head.rotation.x += animState.current.gazeY;
+    }
+
+    // ── Шаг 8: моргание ──
     if (cfg.blinking) {
       animState.current.blinkTimer -= delta;
       if (!animState.current.isBlinking && animState.current.blinkTimer < 0) {
         animState.current.isBlinking = true;
         animState.current.blinkPhase = 0;
-        // 15% шанс двойного моргания —眨眨
         const isDouble = Math.random() < 0.15;
         animState.current.blinkDuration = isDouble ? 0.35 : 0.15;
       }
       if (animState.current.isBlinking) {
-        animState.current.blinkPhase += delta / (animState.current.blinkDuration ?? 0.15);
+        animState.current.blinkPhase += delta / animState.current.blinkDuration;
         if (animState.current.blinkPhase >= 1) {
           animState.current.isBlinking = false;
-          // Случайный интервал до следующего моргания: 2-6 сек
           animState.current.blinkTimer = 2 + Math.random() * 4;
           setExpr(vrm, 'blink', 0);
         } else {
-          // Треугольная функция: 0 → 1 → 0. Для двойного моргания — две волны.
           let v;
-          if (animState.current.blinkDuration && animState.current.blinkDuration > 0.25) {
-            // Двойное моргание: две треугольные волны
+          if (animState.current.blinkDuration > 0.25) {
             const half = animState.current.blinkPhase * 2;
             const localPhase = half % 1;
             v = localPhase < 0.5 ? localPhase * 2 : (1 - localPhase) * 2;
@@ -698,7 +785,7 @@ function VrmModel({
       }
     }
 
-    // ── Эмоции — плавная интерполяция к целевым blendshapes ──
+    // ── Шаг 9: эмоции (blendshapes) ──
     if (cfg.emotionMorph) {
       const target = emotionToBlendshapes(emotion);
       const lerp = 1 - Math.pow(0.001, delta);
@@ -711,7 +798,7 @@ function VrmModel({
       }
     }
 
-    // ── Липсинк — управляет ТОЛЬКО 'aa' ──
+    // ── Шаг 10: липсинк ──
     if (cfg.lipSync && speaking) {
       animState.current.mouthPhase += delta * 12;
       const target = (Math.sin(animState.current.mouthPhase) + 1) / 2 * 0.5;
@@ -738,77 +825,6 @@ function VrmModel({
   return <group ref={groupRef} />;
 }
 
-// ============================================================================
-// Эмоциональная поза — изменения скелета под текущую эмоцию.
-// Применяется поверх idle-анимаций (с маленьким весом), чтобы поза «дышала»
-// вместе с эмоцией, а не застывала.
-// ============================================================================
-function applyEmotionPose(
-  vrm: VRM,
-  emotion: EmotionVector,
-  state: {
-    breathPhase: number;
-    swayPhase: number;
-  },
-  delta: number,
-) {
-  if (!vrm.humanoid) return;
-  const t = performance.now() / 1000;
-
-  // Joy (радость) — лёгкое подпрыгивание, плечи чуть назад (открытая поза)
-  if (emotion.joy > 0.6) {
-    const bounce = Math.sin(t * 2.5) * 0.015 * (emotion.joy - 0.5);
-    const hips = vrm.humanoid.getNormalizedBoneNode('hips');
-    if (hips) hips.position.y = bounce;
-  }
-
-  // Sadness (грусть) — плечи опускаются вперёд, голова клонится вниз
-  if (emotion.sadness > 0.4) {
-    const intensity = (emotion.sadness - 0.3) * 0.5;
-    const spine = vrm.humanoid.getNormalizedBoneNode('spine');
-    if (spine) spine.rotation.x += intensity * 0.08;
-    const head = vrm.humanoid.getNormalizedBoneNode('head');
-    if (head) head.rotation.x += intensity * 0.1;
-    const leftShoulder = vrm.humanoid.getNormalizedBoneNode('leftShoulder');
-    const rightShoulder = vrm.humanoid.getNormalizedBoneNode('rightShoulder');
-    if (leftShoulder) leftShoulder.rotation.z += intensity * 0.05;
-    if (rightShoulder) rightShoulder.rotation.z -= intensity * 0.05;
-  }
-
-  // Irritation (раздражение) — лёгкое скрещивание рук, подбородок вверх
-  if (emotion.irritation > 0.4) {
-    const intensity = (emotion.irritation - 0.3) * 0.5;
-    const head = vrm.humanoid.getNormalizedBoneNode('head');
-    if (head) head.rotation.x -= intensity * 0.06;
-    const leftUpperArm = vrm.humanoid.getNormalizedBoneNode('leftUpperArm');
-    const rightUpperArm = vrm.humanoid.getNormalizedBoneNode('rightUpperArm');
-    // Слегка приближаем руки к корпусу
-    if (leftUpperArm) leftUpperArm.rotation.z += intensity * 0.04;
-    if (rightUpperArm) rightUpperArm.rotation.z -= intensity * 0.04;
-  }
-
-  // Curiosity (любопытство) — лёгкий наклон головы вбок
-  if (emotion.curiosity > 0.6) {
-    const intensity = (emotion.curiosity - 0.5) * 0.3;
-    const head = vrm.humanoid.getNormalizedBoneNode('head');
-    if (head) head.rotation.z = Math.sin(t * 0.4) * intensity * 0.08;
-  }
-
-  // Calm (спокойствие) — расслабленные плечи, мягкое покачивание
-  if (emotion.calm > 0.6) {
-    const intensity = (emotion.calm - 0.5) * 0.2;
-    const leftShoulder = vrm.humanoid.getNormalizedBoneNode('leftShoulder');
-    const rightShoulder = vrm.humanoid.getNormalizedBoneNode('rightShoulder');
-    if (leftShoulder) leftShoulder.rotation.z -= intensity * 0.03;
-    if (rightShoulder) rightShoulder.rotation.z += intensity * 0.03;
-  }
-
-  // delta используется только для согласованности сигнатуры;
-  // реальные плавные переходы уже делает lerp в основном цикле
-  void delta;
-  void state;
-}
-
 function setExpr(vrm: VRM, name: VRMExpressionPresetName | string, value: number) {
   if (!vrm.expressionManager) return;
   try {
@@ -817,8 +833,6 @@ function setExpr(vrm: VRM, name: VRMExpressionPresetName | string, value: number
 }
 
 function emotionToBlendshapes(e: EmotionVector): Record<string, number> {
-  // 'aa' намеренно отсутствует — управляется липсинком.
-  // 'surprised' не используется — открывает рот.
   return {
     happy:     Math.max(0, e.joy - 0.4) * 1.0,
     angry:     Math.max(0, e.irritation - 0.35) * 1.2,

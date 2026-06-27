@@ -54,6 +54,9 @@ export async function POST(req: NextRequest) {
     if (!goal || typeof goal !== 'string' || goal.trim().length === 0) {
       return NextResponse.json({ error: 'goal required' }, { status: 400 });
     }
+    if (goal.length > 10_000) {
+      return NextResponse.json({ error: 'goal too long (max 10000 chars)' }, { status: 413 });
+    }
 
     // Get capability profile to set adaptive agent limits
     const { params: tierParams } = await getCognitiveParams();

@@ -3,7 +3,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { readFile } from 'fs/promises';
 import path from 'path';
-import { PATHS, sanitizeFilename } from '@/lib/paths';
+import { PATHS } from '@/lib/paths';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -35,14 +35,19 @@ export async function GET(
 ) {
   const { filename } = await params;
 
-  // Sanitize — prevents path traversal on all platforms
-  const safeName = sanitizeFilename(filename);
-  if (!safeName || safeName !== filename) {
+  // Security: use path.basename to strip any directory components.
+  // This prevents path traversal (../../../etc/passwd).
+  // Then check the basename matches the original (no directory parts).
+  const basename = path.basename(filename);
+  if (basename !== filename || basename.startsWith('.')) {
     return NextResponse.json({ error: 'invalid filename' }, { status: 400 });
   }
 
-  // Use path.basename to strip any directory components (defense in depth)
-  const basename = path.basename(filename);
+  // Additional check: no path separators or parent references
+  if (filename.includes('..') || filename.includes('/') || filename.includes('\\')) {
+    return NextResponse.json({ error: 'invalid filename' }, { status: 400 });
+  }
+
   const filePath = path.join(PATHS.artifacts, basename);
 
   try {

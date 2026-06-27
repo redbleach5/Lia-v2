@@ -1,10 +1,13 @@
 'use client';
 
-import type { ChatMessage } from '@/stores/chat-store';
+import { memo } from 'react';
+import type { ChatMessage as ChatMessageType } from '@/stores/chat-store';
 import { cn } from '@/lib/utils';
 import { ToolCallCard } from './tool-call-card';
 
-export function ChatMessage({ message, isLast }: { message: ChatMessage; isLast: boolean }) {
+// React.memo предотвращает ре-рендер ранее отрендеренных сообщений
+// при стриминговом обновлении последнего сообщения.
+export const ChatMessage = memo(function ChatMessage({ message, isLast }: { message: ChatMessageType; isLast: boolean }) {
   const isUser = message.role === 'user';
   const isStreaming = message.streaming === true;
 
@@ -45,10 +48,7 @@ export function ChatMessage({ message, isLast }: { message: ChatMessage; isLast:
       )}
     </div>
   );
-}
-
-// ============================================================================
-// Message content — simple markdown-ish renderer.
+});
 // MVP: code blocks + inline code + paragraphs.
 // Full markdown rendering comes via react-markdown later.
 // ============================================================================

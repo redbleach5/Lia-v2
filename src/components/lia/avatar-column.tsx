@@ -2,13 +2,18 @@
 
 import { useChatStore } from '@/stores/chat-store';
 import { EmotionBars } from './avatar-svg';
-import { Live2DAvatar } from './live2d-avatar';
+import dynamic from 'next/dynamic';
+
+// Live2D (PixiJS ~500KB) — lazy-loaded, только если пользователь выбрал 2D режим
+const Live2DAvatar = dynamic(() => import('./live2d-avatar').then(m => m.Live2DAvatar), {
+  ssr: false,
+  loading: () => <div className="w-full h-full flex items-center justify-center text-text-dim text-xs">загрузка 2D…</div>,
+});
 import { AgentPanel } from './agent-panel';
 import { RLPanel } from './rl-panel';
 import { CapabilityIndicator } from './capability-indicator';
 import { Sparkles, ChevronDown, Eye, EyeOff } from 'lucide-react';
 import { useState, useEffect, type ReactNode } from 'react';
-import dynamic from 'next/dynamic';
 import { dominantEmotion } from '@/lib/emotion';
 import { EMOTION_LABELS_RU, type EmotionAxis } from '@/lib/personality';
 import { DEFAULT_AVATAR_CONFIG, parseAvatarConfig, type AvatarConfig } from '@/lib/avatar-config';

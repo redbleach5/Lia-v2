@@ -28,6 +28,7 @@ import { detectLoop } from './loop-detector';
 import {
   emitAgentEvent,
   bufferEvent,
+  clearBuffer,
   isCancelled,
   clearCancellation,
   cancelWaiting,
@@ -335,6 +336,13 @@ export async function runAgentTask(taskId: string): Promise<void> {
     activeRunners.delete(taskId);
     clearCancellation(taskId);
     cancelWaiting(taskId);
+
+    // Clean up event buffer — prevents memory leak.
+    // Buffer is kept for SSE reconnect, but we delay cleanup by 5 min
+    // to allow client to fetch final events after task completion.
+    setTimeout(() => {
+      clearBuffer(taskId);
+    }, 5 * 60 * 1000).unref?.();
   }
 }
 

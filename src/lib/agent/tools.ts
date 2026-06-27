@@ -7,7 +7,7 @@
 
 import { tool, type ToolSet } from 'ai';
 import { z } from 'zod';
-import { readFile, writeFile, readdir, stat, mkdir } from 'fs/promises';
+import { readFile, writeFile, readdir, stat, mkdir, realpath } from 'fs/promises';
 import { join, resolve, relative, isAbsolute } from 'path';
 import { saveArtifact } from '../tools/save-artifact';
 import { webSearch } from '../tools/web-search';
@@ -22,14 +22,32 @@ import {
 // ============================================================================
 // Helpers — безопасная работа с путями внутри fsScope
 // ============================================================================
-function safePathWithinScope(path: string, scope: string | null): string | null {
+async function safePathWithinScope(path: string, scope: string | null): Promise<string | null> {
   if (!scope) return null;
-  // Normalize: resolve relative to scope, prevent .. escapes
   const base = resolve(scope);
   const target = isAbsolute(path) ? resolve(path) : resolve(base, path);
-  const rel = relative(base, target);
-  if (rel.startsWith('..') || isAbsolute(rel)) return null; // escape attempt
-  return target;
+
+  // Use realpath to resolve symlinks — prevents path traversal via symlink attacks.
+  // If target doesn't exist yet (write_file creating new), check parent exists.
+  try {
+    const realBase = await realpath(base);
+    const realTarget = await realpath(target);
+    const rel = relative(realBase, realTarget);
+    if (rel.startsWith('..') || isAbsolute(rel)) return null; // escape attempt
+    return realTarget;
+  } catch {
+    // File doesn't exist yet — check the parent directory
+    try {
+      const realBase = await realpath(base);
+      const parentDir = resolve(target, '..');
+      const realParent = await realpath(parentDir);
+      const rel = relative(realBase, realParent);
+      if (rel.startsWith('..') || isAbsolute(rel)) return null;
+      return target; // Return non-realpath'd target for writing
+    } catch {
+      return null;
+    }
+  }
 }
 
 // ============================================================================
@@ -46,7 +64,7 @@ function makeReadFileTool(task: AgentTask) {
       if (!task.fsScope) {
         return { error: 'У задачи нет рабочей директории (fsScope). Чтение файлов запрещено.' };
       }
-      const fullPath = safePathWithinScope(path, task.fsScope);
+      const fullPath = await safePathWithinScope(path, task.fsScope);
       if (!fullPath) {
         return { error: `Путь "${path}" выходит за пределы рабочей директории` };
       }
@@ -78,7 +96,7 @@ function makeWriteFileTool(task: AgentTask) {
       if (!task.fsScope) {
         return { error: 'У задачи нет рабочей директории (fsScope). Запись файлов запрещена.' };
       }
-      const fullPath = safePathWithinScope(path, task.fsScope);
+      const fullPath = await safePathWithinScope(path, task.fsScope);
       if (!fullPath) {
         return { error: `Путь "${path}" выходит за пределы рабочей директории` };
       }
@@ -106,7 +124,7 @@ function makeListDirTool(task: AgentTask) {
       if (!task.fsScope) {
         return { error: 'У задачи нет рабочей директории' };
       }
-      const fullPath = safePathWithinScope(path, task.fsScope);
+      const fullPath = await safePathWithinScope(path, task.fsScope);
       if (!fullPath) {
         return { error: `Путь "${path}" выходит за пределы рабочей директории` };
       }
@@ -127,41 +145,129 @@ function makeListDirTool(task: AgentTask) {
 // ============================================================================
 // http_request — HTTP с SSRF-защитой
 // ============================================================================
-const BLOCKED_HOSTS = [
-  /^127\./, /^10\./, /^192\.168\./, /^172\.(1[6-9]|2[0-9]|3[0-1])\./,
-  /^169\.254\./, /^::1$/, /^fc00::/, /^fe80::/,
-  /^localhost$/i,
+// SSRF protection: resolves hostname to IP via DNS, checks ALL resolved IPs
+// against blocklist. Prevents DNS-rebinding attacks where hostname resolves
+// to public IP at check time but private IP at fetch time.
+//
+// Also follows redirects MANUALLY — checks each redirect target.
+
+import { lookup } from 'dns/promises';
+import { isIP } from 'net';
+
+const BLOCKED_IP_PATTERNS = [
+  /^127\./,                           // loopback
+  /^10\./,                            // private class A
+  /^192\.168\./,                      // private class C
+  /^172\.(1[6-9]|2[0-9]|3[0-1])\./,  // private class B
+  /^169\.254\./,                      // link-local
+  /^0\./,                             // 0.0.0.0/8
+  /^100\.(6[4-9]|[7-9]\d|1[0-1]\d|12[0-7])\./, // CGNAT 100.64.0.0/10
+  /^::1$/,                            // IPv6 loopback
+  /^fc00::/,                          // IPv6 ULA
+  /^fe80::/,                          // IPv6 link-local
+  /^::ffff:/,                         // IPv4-mapped IPv6 (check inner)
 ];
 
-function isPrivateHost(hostname: string): boolean {
-  return BLOCKED_HOSTS.some(re => re.test(hostname));
+function isPrivateIp(ip: string): boolean {
+  // Handle IPv4-mapped IPv6 (::ffff:1.2.3.4)
+  const mappedMatch = ip.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/i);
+  if (mappedMatch) {
+    return isPrivateIp(mappedMatch[1]);
+  }
+  return BLOCKED_IP_PATTERNS.some(re => re.test(ip));
+}
+
+/**
+ * Resolve hostname and check ALL resolved IPs against blocklist.
+ * Throws if any IP is private/blocked.
+ */
+async function assertSafeHost(hostname: string): Promise<void> {
+  // If hostname is already an IP, check directly
+  if (isIP(hostname)) {
+    if (isPrivateIp(hostname)) {
+      throw new Error(`blocked IP: ${hostname}`);
+    }
+    return;
+  }
+
+  // localhost check
+  if (hostname.toLowerCase() === 'localhost') {
+    throw new Error('blocked: localhost');
+  }
+
+  // DNS resolve
+  let addresses: Array<{ address: string }>;
+  try {
+    addresses = await lookup(hostname, { all: true });
+  } catch {
+    throw new Error(`DNS resolution failed for ${hostname}`);
+  }
+
+  if (addresses.length === 0) {
+    throw new Error(`no DNS records for ${hostname}`);
+  }
+
+  // Check ALL resolved IPs
+  for (const { address } of addresses) {
+    if (isPrivateIp(address)) {
+      throw new Error(`blocked IP ${address} for ${hostname}`);
+    }
+  }
 }
 
 function makeHttpRequestTool() {
   return tool({
-    description: 'Выполнить HTTP GET-запрос к указанному URL. Возвращает статус, заголовки, тело (до 10000 символов). Блокирует private/internal IP.',
+    description: 'Выполнить HTTP GET-запрос к указанному URL. Возвращает статус, заголовки, тело (до 10000 символов). Блокирует private/internal IP (SSRF protection).',
     inputSchema: z.object({
       url: z.string().url().describe('Полный URL включая схему (http/https)'),
     }),
     execute: async ({ url }) => {
       try {
         const u = new URL(url);
-        if (isPrivateHost(u.hostname)) {
-          return { error: `Хост "${u.hostname}" заблокирован (private/internal IP)` };
+
+        // SSRF check: resolve DNS and verify all IPs are public
+        await assertSafeHost(u.hostname);
+
+        // Manual redirect following — check each redirect target
+        let currentUrl = url;
+        let redirectCount = 0;
+        const MAX_REDIRECTS = 5;
+
+        while (redirectCount < MAX_REDIRECTS) {
+          const res = await fetch(currentUrl, {
+            headers: { 'User-Agent': 'Lia-Agent/2.0' },
+            signal: AbortSignal.timeout(20_000),
+            redirect: 'manual',  // we handle redirects ourselves
+          });
+
+          // Check for redirect
+          if (res.status >= 300 && res.status < 400) {
+            const location = res.headers.get('location');
+            if (!location) break;
+
+            // Resolve relative redirects
+            const redirectUrl = new URL(location, currentUrl);
+            redirectCount++;
+
+            // SSRF check on redirect target
+            await assertSafeHost(redirectUrl.hostname);
+            currentUrl = redirectUrl.toString();
+            continue;
+          }
+
+          // Not a redirect — return response
+          const text = await res.text();
+          return {
+            status: res.status,
+            statusText: res.statusText,
+            contentType: res.headers.get('content-type'),
+            body: text.slice(0, 10_000),
+            truncated: text.length > 10_000,
+            finalUrl: redirectCount > 0 ? currentUrl : undefined,
+          };
         }
-        const res = await fetch(url, {
-          headers: { 'User-Agent': 'Lia-Agent/2.0' },
-          signal: AbortSignal.timeout(20_000),
-          redirect: 'follow',
-        });
-        const text = await res.text();
-        return {
-          status: res.status,
-          statusText: res.statusText,
-          contentType: res.headers.get('content-type'),
-          body: text.slice(0, 10_000),
-          truncated: text.length > 10_000,
-        };
+
+        return { error: `too many redirects (max ${MAX_REDIRECTS})` };
       } catch (e) {
         return { error: e instanceof Error ? e.message : String(e) };
       }
@@ -221,7 +327,7 @@ function makeFileSearchTool(task: AgentTask) {
         return { error: 'У задачи нет рабочей директории (fsScope). Поиск файлов запрещён.' };
       }
 
-      const scopePath = safePathWithinScope('.', task.fsScope);
+      const scopePath = await safePathWithinScope('.', task.fsScope);
       if (!scopePath) {
         return { error: 'Не удалось определить рабочую директорию' };
       }

@@ -26,6 +26,8 @@ model Episode {
   vectorMemories   VectorMemory[]
   emotionalMemories EmotionalMemory[]
   agentTasks       AgentTask[]
+
+  @@index([updatedAt])  // for listEpisodes(orderBy: updatedAt desc)
 }
 
 // ============================================================================
@@ -56,10 +58,8 @@ model Message {
 
   @@index([episodeId])
   @@index([createdAt])
+  @@index([episodeId, createdAt])  // composite for getMessages(episodeId, orderBy createdAt)
 }
-
-// ============================================================================
-// Global facts — профиль пользователя, переживает смену чата
 // ============================================================================
 // Только то, что пользователь сам сообщил и что относится ко всем чатам:
 // имя, профессия, любимый язык, часовой пояс и т.п.
@@ -224,6 +224,7 @@ model AgentTask {
 
   @@index([episodeId])
   @@index([status])
+  @@index([parentTaskId])  // for sub-agent queries
 }
 
 model AgentArtifact {

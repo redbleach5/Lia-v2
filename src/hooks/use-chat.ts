@@ -15,16 +15,18 @@ import { useChatStore, type ChatMessage, type ChatMode } from '@/stores/chat-sto
 import { toast } from 'sonner';
 
 export function useChat() {
-  const store = useChatStore();
   const abortRef = useRef<AbortController | null>(null);
 
   const sendMessage = useCallback(async (text: string, mode: ChatMode = 'auto') => {
-    const episodeId = store.currentEpisodeId;
+    // Используем getState() вместо подписки на весь store —
+    // это предотвращает ре-рендеры при каждом стриминговом chunk'е.
+    const state = useChatStore.getState();
+    const episodeId = state.currentEpisodeId;
     if (!episodeId) {
       toast.error('Нет активного чата. Создай новый.');
       return;
     }
-    if (store.isStreaming) return;
+    if (state.isStreaming) return;
 
     // ── AGENT MODE: create agent task instead of streaming chat ──
     if (mode === 'agent') {
@@ -35,7 +37,7 @@ export function useChat() {
         content: text,
         createdAt: Date.now(),
       };
-      store.addMessage(userMsg);
+      useChatStore.getState().addMessage(userMsg);
 
       try {
         const res = await fetch('/api/agent', {
@@ -81,9 +83,9 @@ export function useChat() {
       streaming: true,
       createdAt: Date.now() + 1,
     };
-    store.addMessage(userMsg);
-    store.addMessage(liaMsg);
-    store.setStreaming(true);
+    useChatStore.getState().addMessage(userMsg);
+    useChatStore.getState().addMessage(liaMsg);
+    useChatStore.getState().setStreaming(true);
 
     abortRef.current = new AbortController();
 
@@ -108,7 +110,7 @@ export function useChat() {
       if (emotionHeader) {
         try {
           const emotion = JSON.parse(emotionHeader);
-          store.setEmotion(emotion);
+          useChatStore.getState().setEmotion(emotion);
         } catch { /* ignore */ }
       }
 
@@ -141,26 +143,26 @@ export function useChat() {
         if (done) break;
         const chunk = decoder.decode(value, { stream: true });
         accumulated += chunk;
-        store.updateLastMessage(accumulated);
+        useChatStore.getState().updateLastMessage(accumulated);
       }
 
-      store.updateLastMessage(accumulated);
-      store.finalizeLastMessage();
+      useChatStore.getState().updateLastMessage(accumulated);
+      useChatStore.getState().finalizeLastMessage();
     } catch (e) {
       if (e instanceof Error && e.name === 'AbortError') {
-        store.finalizeLastMessage();
+        useChatStore.getState().finalizeLastMessage();
       } else {
         const msg = e instanceof Error ? e.message : String(e);
         console.error('[useChat] error:', e);
         toast.error(`Не удалось отправить: ${msg}`);
-        store.updateLastMessage('⚠️ Соединение прервано. Попробуй ещё раз.');
-        store.finalizeLastMessage();
+        useChatStore.getState().updateLastMessage('⚠️ Соединение прервано. Попробуй ещё раз.');
+        useChatStore.getState().finalizeLastMessage();
       }
     } finally {
-      store.setStreaming(false);
+      useChatStore.getState().setStreaming(false);
       abortRef.current = null;
     }
-  }, [store]);
+  }, []); // пустой deps — используем getState() вместо подписки на store
 
   const stop = useCallback(() => {
     if (abortRef.current) {

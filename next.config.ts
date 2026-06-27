@@ -2,12 +2,11 @@ import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
   output: "standalone",
-  typescript: {
-    ignoreBuildErrors: true,
-  },
-  reactStrictMode: false,
+  reactStrictMode: true,
   serverExternalPackages: [
     'better-sqlite3',
+    'onnxruntime-node',
+    'sqlite-vec',
   ],
 };
 

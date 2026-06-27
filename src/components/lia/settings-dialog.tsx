@@ -44,7 +44,8 @@ import {
   parseAvatarConfig,
   type AvatarConfig,
   type CameraPreset,
-  type PlatformStyle,
+  type PlatformShape,
+  type RingAnimation,
   type BackgroundStyle,
   type LightingPreset,
   type ArmPose,
@@ -644,31 +645,35 @@ export function SettingsDialog() {
                     <div className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
                       Платформа
                     </div>
-                    <div className="grid grid-cols-4 gap-1.5">
-                      {([
-                        ['classic', 'Классическая'],
-                        ['minimal', 'Минимал'],
-                        ['glow', 'Свечение'],
-                        ['off', 'Без платформы'],
-                      ] as Array<[PlatformStyle, string]>).map(([id, label]) => (
-                        <button
-                          key={id}
-                          onClick={() => updateConfig('platform', { style: id })}
-                          className={cn(
-                            'text-[10px] px-2 py-1.5 rounded border transition-colors',
-                            avatarConfig.platform.style === id
-                              ? 'border-accent bg-accent/10 text-accent'
-                              : 'border-border hover:border-accent/50',
-                          )}
-                        >
-                          {label}
-                        </button>
-                      ))}
-                    </div>
+                    {/* Форма платформы */}
+                    <LabelBlock label="Форма">
+                      <div className="grid grid-cols-5 gap-1.5">
+                        {([
+                          ['disc', 'Диск'],
+                          ['hexagon', 'Шестиугольник'],
+                          ['ring', 'Кольцо'],
+                          ['pedestal', 'Пьедестал'],
+                          ['off', 'Без платформы'],
+                        ] as Array<[PlatformShape, string]>).map(([id, label]) => (
+                          <button
+                            key={id}
+                            onClick={() => updateConfig('platform', { shape: id })}
+                            className={cn(
+                              'text-[10px] px-1 py-1.5 rounded border transition-colors',
+                              avatarConfig.platform.shape === id
+                                ? 'border-accent bg-accent/10 text-accent'
+                                : 'border-border hover:border-accent/50',
+                            )}
+                          >
+                            {label}
+                          </button>
+                        ))}
+                      </div>
+                    </LabelBlock>
 
-                    {avatarConfig.platform.style !== 'off' && (
+                    {avatarConfig.platform.shape !== 'off' && (
                       <>
-                        <LabelBlock label={`Радиус диска: ${avatarConfig.platform.radius.toFixed(2)}`}>
+                        <LabelBlock label={`Радиус: ${avatarConfig.platform.radius.toFixed(2)}`}>
                           <Slider
                             value={[avatarConfig.platform.radius]}
                             min={0.25}
@@ -677,6 +682,18 @@ export function SettingsDialog() {
                             onValueChange={([v]) => updateConfig('platform', { radius: v })}
                           />
                         </LabelBlock>
+
+                        {/* Высота платформы — особенно важна для pedestal */}
+                        <LabelBlock label={`Высота: ${avatarConfig.platform.height.toFixed(2)}`}>
+                          <Slider
+                            value={[avatarConfig.platform.height]}
+                            min={0.02}
+                            max={0.2}
+                            step={0.01}
+                            onValueChange={([v]) => updateConfig('platform', { height: v })}
+                          />
+                        </LabelBlock>
+
                         <LabelBlock label={`Непрозрачность: ${Math.round(avatarConfig.platform.opacity * 100)}%`}>
                           <Slider
                             value={[avatarConfig.platform.opacity]}
@@ -686,6 +703,45 @@ export function SettingsDialog() {
                             onValueChange={([v]) => updateConfig('platform', { opacity: v })}
                           />
                         </LabelBlock>
+
+                        {/* Анимация светящегося кольца */}
+                        <LabelBlock label="Анимация кольца">
+                          <div className="grid grid-cols-4 gap-1.5">
+                            {([
+                              ['solid', 'Постоянное'],
+                              ['pulse', 'Пульс'],
+                              ['breathing', 'Дыхание'],
+                              ['rotate', 'Вращение'],
+                            ] as Array<[RingAnimation, string]>).map(([id, label]) => (
+                              <button
+                                key={id}
+                                onClick={() => updateConfig('platform', { ringAnimation: id })}
+                                className={cn(
+                                  'text-[10px] px-1 py-1.5 rounded border transition-colors',
+                                  avatarConfig.platform.ringAnimation === id
+                                    ? 'border-accent bg-accent/10 text-accent'
+                                    : 'border-border hover:border-accent/50',
+                                )}
+                              >
+                                {label}
+                              </button>
+                            ))}
+                          </div>
+                        </LabelBlock>
+
+                        {/* Скорость вращения — только если ringAnimation === 'rotate' */}
+                        {avatarConfig.platform.ringAnimation === 'rotate' && (
+                          <LabelBlock label={`Скорость вращения: ${avatarConfig.platform.rotateSpeed.toFixed(2)}×`}>
+                            <Slider
+                              value={[avatarConfig.platform.rotateSpeed]}
+                              min={0.1}
+                              max={2}
+                              step={0.1}
+                              onValueChange={([v]) => updateConfig('platform', { rotateSpeed: v })}
+                            />
+                          </LabelBlock>
+                        )}
+
                         <div className="space-y-1.5 pt-1">
                           <ToggleRow
                             label="Внутреннее кольцо"
@@ -693,14 +749,14 @@ export function SettingsDialog() {
                             onChange={v => updateConfig('platform', { showInnerRing: v })}
                           />
                           <ToggleRow
-                            label="Свечение под платформой"
+                            label="Свечение под платформой (halo)"
                             checked={avatarConfig.platform.showHalo}
                             onChange={v => updateConfig('platform', { showHalo: v })}
                           />
                           <ToggleRow
-                            label="Пульсация в такт эмоции"
-                            checked={avatarConfig.platform.pulse}
-                            onChange={v => updateConfig('platform', { pulse: v })}
+                            label="Контактная тень под аватаром"
+                            checked={avatarConfig.platform.showShadow}
+                            onChange={v => updateConfig('platform', { showShadow: v })}
                           />
                         </div>
                       </>
@@ -842,10 +898,13 @@ export function SettingsDialog() {
                     </LabelBlock>
                   </div>
 
-                  {/* Анимации */}
+                  {/* Движения и анимации */}
                   <div className="rounded-md border border-border bg-surface/40 p-3 space-y-1.5">
                     <div className="text-[11px] font-medium uppercase tracking-wider text-muted-foreground mb-1">
-                      Анимации
+                      Движения и анимации
+                    </div>
+                    <div className="text-[10px] text-text-dim mb-2">
+                      Делают аватар живым. Каждый канал можно включить/выключить отдельно.
                     </div>
                     <ToggleRow
                       label="Дыхание"
@@ -853,7 +912,7 @@ export function SettingsDialog() {
                       onChange={v => updateConfig('animation', { breathing: v })}
                     />
                     <ToggleRow
-                      label="Моргание"
+                      label="Моргание (с редкими двойными)"
                       checked={avatarConfig.animation.blinking}
                       onChange={v => updateConfig('animation', { blinking: v })}
                     />
@@ -863,15 +922,56 @@ export function SettingsDialog() {
                       onChange={v => updateConfig('animation', { headSway: v })}
                     />
                     <ToggleRow
+                      label="Покачивание телом (бёдра + плечи)"
+                      checked={avatarConfig.animation.bodySway}
+                      onChange={v => updateConfig('animation', { bodySway: v })}
+                    />
+                    <ToggleRow
+                      label="Микро-движения рук"
+                      checked={avatarConfig.animation.armSway}
+                      onChange={v => updateConfig('animation', { armSway: v })}
+                    />
+                    <ToggleRow
+                      label="Перенос веса с ноги на ногу"
+                      checked={avatarConfig.animation.weightShift}
+                      onChange={v => updateConfig('animation', { weightShift: v })}
+                    />
+                    <ToggleRow
+                      label="Взгляд следует за курсором"
+                      checked={avatarConfig.animation.gazeFollow}
+                      onChange={v => updateConfig('animation', { gazeFollow: v })}
+                    />
+                    <ToggleRow
                       label="Липсинк при ответе"
                       checked={avatarConfig.animation.lipSync}
                       onChange={v => updateConfig('animation', { lipSync: v })}
                     />
                     <ToggleRow
-                      label="Плавная смена эмоций"
+                      label="Плавная смена эмоций (мимика)"
                       checked={avatarConfig.animation.emotionMorph}
                       onChange={v => updateConfig('animation', { emotionMorph: v })}
                     />
+                    <ToggleRow
+                      label="Эмоциональная поза (плечи, наклон)"
+                      checked={avatarConfig.animation.emotionPose}
+                      onChange={v => updateConfig('animation', { emotionPose: v })}
+                    />
+
+                    <div className="pt-2">
+                      <LabelBlock label={`Частота движений: ${avatarConfig.animation.idleFrequency.toFixed(2)}×`}>
+                        <Slider
+                          value={[avatarConfig.animation.idleFrequency]}
+                          min={0.3}
+                          max={2}
+                          step={0.1}
+                          onValueChange={([v]) => updateConfig('animation', { idleFrequency: v })}
+                        />
+                        <div className="flex justify-between text-[9px] text-text-dim mt-0.5">
+                          <span>спокойно</span>
+                          <span>оживлённо</span>
+                        </div>
+                      </LabelBlock>
+                    </div>
                   </div>
                 </>
               )}

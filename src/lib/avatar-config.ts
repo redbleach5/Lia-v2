@@ -11,24 +11,39 @@ export type CameraPreset = 'portrait' | 'fullbody' | 'closeup' | 'custom';
 
 export type AvatarCameraConfig = {
   preset: CameraPreset;
-  // Если preset === 'custom' — используются эти значения
-  position: [number, number, number];   // [x, y, z] — позиция камеры
-  target: [number, number, number];     // [x, y, z] — куда смотрит
-  fov: number;                          // угол обзора в градусах (20-70)
+  position: [number, number, number];
+  target: [number, number, number];
+  fov: number;
 };
 
 // ============================================================================
 // Платформа — диск под аватаром, индикатор эмоции
 // ============================================================================
-export type PlatformStyle = 'classic' | 'minimal' | 'glow' | 'off';
+// Форма платформы — расширенный набор геометрий:
+//   disc     — классический круглый диск (как раньше 'classic')
+//   hexagon  — шестиугольная «техно»-платформа, 6 граней
+//   ring     — только кольцо, без диска (парящий вид)
+//   pedestal — пьедестал: высокий диск + основание шире
+//   off      — без платформы
+export type PlatformShape = 'disc' | 'hexagon' | 'ring' | 'pedestal' | 'off';
+
+// Стиль свечения кольца:
+//   solid     — постоянное свечение
+//   pulse     — пульсация в такт эмоции
+//   rotate    — вращение кольца вокруг аватара
+//   breathing — медленное «дыхание» (увеличение/уменьшение яркости)
+export type RingAnimation = 'solid' | 'pulse' | 'rotate' | 'breathing';
 
 export type AvatarPlatformConfig = {
-  style: PlatformStyle;
-  radius: number;          // 0.30 - 0.60 — радиус диска
-  showInnerRing: boolean;  // внутреннее светящееся кольцо
-  showHalo: boolean;       // мягкое свечение на полу вокруг платформы
-  pulse: boolean;          // пульсация в такт интенсивности эмоции
-  opacity: number;         // 0.4 - 1.0 — непрозрачность диска
+  shape: PlatformShape;
+  radius: number;            // 0.30 - 0.60 — радиус диска
+  height: number;            // 0.02 - 0.20 — толщина платформы (для pedestal выше)
+  showInnerRing: boolean;
+  showHalo: boolean;         // мягкое свечение на полу вокруг платформы
+  showShadow: boolean;       // контактная тень под аватаром (имитация)
+  ringAnimation: RingAnimation;
+  rotateSpeed: number;       // 0 - 2 — скорость вращения (если ringAnimation='rotate')
+  opacity: number;           // 0.4 - 1.0 — непрозрачность диска
 };
 
 // ============================================================================
@@ -38,11 +53,8 @@ export type BackgroundStyle = 'transparent' | 'gradient' | 'solid' | 'radial';
 
 export type AvatarBackgroundConfig = {
   style: BackgroundStyle;
-  // Для 'solid' — заливка одним цветом
-  // Для 'gradient' — радиальный градиент от center к edge
-  // Для 'radial' — мягкое свечение от центра
-  color: string;       // hex, например '#fafafa' или 'transparent'
-  edgeColor: string;   // hex — для gradient/radial
+  color: string;
+  edgeColor: string;
 };
 
 // ============================================================================
@@ -52,18 +64,24 @@ export type LightingPreset = 'warm' | 'cool' | 'neutral' | 'soft' | 'dramatic';
 
 export type AvatarLightingConfig = {
   preset: LightingPreset;
-  intensity: number;     // 0.5 - 1.5 — общая яркость
+  intensity: number;
 };
 
 // ============================================================================
-// Анимации — что включено
+// Анимации — покой и микро-движения
 // ============================================================================
 export type AvatarAnimationConfig = {
-  breathing: boolean;     // дыхание (движение спины)
-  blinking: boolean;      // моргание
-  headSway: boolean;      // лёгкое покачивание головой
-  lipSync: boolean;       // липсинк во время стриминга ответа
-  emotionMorph: boolean;  // плавная интерполяция эмоций (happy/sad/angry/...)
+  breathing: boolean;       // дыхание (движение спины)
+  blinking: boolean;        // моргание
+  headSway: boolean;        // лёгкое покачивание головой
+  bodySway: boolean;        // покачивание всем телом (бёдра + плечи)
+  armSway: boolean;         // микро-движения рук (как при ходьбе на месте)
+  weightShift: boolean;     // перенос веса с ноги на ногу (медленный цикл)
+  gazeFollow: boolean;      // взгляд следует за курсором мыши (если в фокусе)
+  lipSync: boolean;         // липсинк во время стриминга ответа
+  emotionMorph: boolean;    // плавная интерполяция эмоций (happy/sad/angry/...)
+  emotionPose: boolean;     // изменения позы под эмоцию (joy → лёгкий наклон, sadness → плечи вниз)
+  idleFrequency: number;    // 0.3 - 2.0 — множитель частоты всех idle-анимаций
 };
 
 // ============================================================================
@@ -73,8 +91,8 @@ export type ArmPose = 'natural' | 'relaxed' | 't-pose' | 'crossed' | 'hands-pock
 
 export type AvatarBodyConfig = {
   armPose: ArmPose;
-  scale: number;          // 0.85 - 1.15 — масштаб модели
-  yOffset: number;        // -0.1 - 0.1 — вертикальное смещение (для центрирования на платформе)
+  scale: number;
+  yOffset: number;
 };
 
 // ============================================================================
@@ -90,26 +108,19 @@ export type AvatarConfig = {
 };
 
 // ============================================================================
-// Пресеты камеры — дефолты для удобного выбора в настройках
+// Пресеты камеры — подобраны под реальные габариты sample.vrm (высота 1.58m)
 // ============================================================================
 export const CAMERA_PRESETS: Record<Exclude<CameraPreset, 'custom'>, Omit<AvatarCameraConfig, 'preset'>> = {
-  // Голова и плечи — крупный план по грудь.
-  // Камера на высоте груди, смотрит горизонтально, FOV 30°.
   portrait: {
     position: [0, 1.45, 0.95],
     target:   [0, 1.40, 0],
     fov: 30,
   },
-  // В полный рост — видна вся модель от макушки до стоп + платформа под ней.
-  // Габариты sample.vrm: высота 1.58m. Платформа на Y=0, центр модели ≈Y=0.85.
-  // При FOV 38° (tan(19°)=0.344): чтобы видеть ~2.0m по вертикали,
-  // нужно расстояние d = 2.0 / (2*0.344) ≈ 2.9m.
   fullbody: {
     position: [0, 0.95, 2.9],
     target:   [0, 0.85, 0],
     fov: 38,
   },
-  // Крупно лицо — для интимной беседы.
   closeup: {
     position: [0, 1.50, 0.65],
     target:   [0, 1.48, 0],
@@ -128,17 +139,20 @@ export const DEFAULT_AVATAR_CONFIG: AvatarConfig = {
     fov: CAMERA_PRESETS.fullbody.fov,
   },
   platform: {
-    style: 'classic',
+    shape: 'disc',
     radius: 0.42,
+    height: 0.04,
     showInnerRing: true,
     showHalo: true,
-    pulse: true,
+    showShadow: true,
+    ringAnimation: 'pulse',
+    rotateSpeed: 0.5,
     opacity: 0.85,
   },
   background: {
     style: 'radial',
-    color: '#f5f1e8',     // тёплый кремовый, как в .lia-glass
-    edgeColor: '#fafafa', // сливается с фоном страницы
+    color: '#f5f1e8',
+    edgeColor: '#fafafa',
   },
   lighting: {
     preset: 'warm',
@@ -148,8 +162,14 @@ export const DEFAULT_AVATAR_CONFIG: AvatarConfig = {
     breathing: true,
     blinking: true,
     headSway: true,
+    bodySway: true,
+    armSway: true,
+    weightShift: true,
+    gazeFollow: true,
     lipSync: true,
     emotionMorph: true,
+    emotionPose: true,
+    idleFrequency: 1.0,
   },
   body: {
     armPose: 'natural',
@@ -167,35 +187,30 @@ export const LIGHTING_PRESETS: Record<LightingPreset, {
   fillLight: { color: string; intensity: number; position: [number, number, number] };
   hemisphere?: { sky: string; ground: string; intensity: number };
 }> = {
-  // Тёплый мягкий свет — как утреннее солнце через окно (по умолчанию)
   warm: {
     ambient:     { color: '#ffffff', intensity: 0.85 },
     keyLight:    { color: '#fff5e8', intensity: 1.0, position: [1, 3, 2] },
     fillLight:   { color: '#e8d5c0', intensity: 0.35, position: [-1, 2, 1] },
     hemisphere:  { sky: '#fff5e8', ground: '#c9a886', intensity: 0.25 },
   },
-  // Холодный — голубоватый, под «спокойствие»
   cool: {
     ambient:     { color: '#f0f4ff', intensity: 0.85 },
     keyLight:    { color: '#e0eaff', intensity: 0.95, position: [1, 3, 2] },
     fillLight:   { color: '#c8d4ff', intensity: 0.4, position: [-1, 2, 1] },
     hemisphere:  { sky: '#e0eaff', ground: '#a8b4c8', intensity: 0.25 },
   },
-  // Нейтральный — белый, без оттенка
   neutral: {
     ambient:     { color: '#ffffff', intensity: 0.9 },
     keyLight:    { color: '#ffffff', intensity: 1.0, position: [1, 3, 2] },
     fillLight:   { color: '#f0f0f0', intensity: 0.4, position: [-1, 2, 1] },
     hemisphere:  { sky: '#ffffff', ground: '#d0d0d0', intensity: 0.2 },
   },
-  // Очень мягкий, рассеянный — минимум теней
   soft: {
     ambient:     { color: '#ffffff', intensity: 1.1 },
     keyLight:    { color: '#fff8ed', intensity: 0.6, position: [1, 3, 2] },
     fillLight:   { color: '#f0e6d2', intensity: 0.6, position: [-1, 2, 1] },
     hemisphere:  { sky: '#fff8ed', ground: '#d8c8a8', intensity: 0.4 },
   },
-  // Драматичный — контрастный, с одного бока
   dramatic: {
     ambient:     { color: '#ffffff', intensity: 0.4 },
     keyLight:    { color: '#fff0d8', intensity: 1.4, position: [2, 2.5, 1] },
@@ -215,7 +230,6 @@ export const ARM_POSES: Record<ArmPose, {
   leftHandZ: number;
   rightHandZ: number;
 }> = {
-  // Естественная поза — руки опущены вдоль тела (по умолчанию)
   natural: {
     leftUpperArmZ: -1.35,
     rightUpperArmZ: 1.35,
@@ -224,7 +238,6 @@ export const ARM_POSES: Record<ArmPose, {
     leftHandZ: 0.15,
     rightHandZ: -0.15,
   },
-  // Расслабленная — руки чуть согнуты, кисти ближе к бёдрам
   relaxed: {
     leftUpperArmZ: -1.15,
     rightUpperArmZ: 1.15,
@@ -233,7 +246,6 @@ export const ARM_POSES: Record<ArmPose, {
     leftHandZ: 0.2,
     rightHandZ: -0.2,
   },
-  // T-pose — руки в стороны (для дебага и калибровки)
   't-pose': {
     leftUpperArmZ: 0,
     rightUpperArmZ: 0,
@@ -242,7 +254,6 @@ export const ARM_POSES: Record<ArmPose, {
     leftHandZ: 0,
     rightHandZ: 0,
   },
-  // Скрещённые на груди
   crossed: {
     leftUpperArmZ: -0.85,
     rightUpperArmZ: 0.85,
@@ -251,7 +262,6 @@ export const ARM_POSES: Record<ArmPose, {
     leftHandZ: 0.6,
     rightHandZ: -0.6,
   },
-  // Руки в карманах (неLiteralно, но визуально похоже)
   'hands-pockets': {
     leftUpperArmZ: -0.95,
     rightUpperArmZ: 0.95,
@@ -263,6 +273,16 @@ export const ARM_POSES: Record<ArmPose, {
 };
 
 // ============================================================================
+// Backwards-compat: старый PlatformStyle → новый PlatformShape
+// ============================================================================
+const LEGACY_PLATFORM_STYLE_MAP: Record<string, PlatformShape> = {
+  classic: 'disc',
+  minimal: 'disc',   // minimal был тем же диском, просто без колец — управляется showInnerRing
+  glow: 'disc',      // glow был диском с мощным свечением — управляется ringAnimation
+  off: 'off',
+};
+
+// ============================================================================
 // Parser — безопасное приведение unknown → AvatarConfig с дефолтами
 // ============================================================================
 export function parseAvatarConfig(json: string): AvatarConfig {
@@ -271,6 +291,7 @@ export function parseAvatarConfig(json: string): AvatarConfig {
     if (typeof raw !== 'object' || raw === null) return { ...DEFAULT_AVATAR_CONFIG };
     const r = raw as Record<string, unknown>;
 
+    // Camera
     const cam = (r.camera ?? {}) as Record<string, unknown>;
     const camPreset = (cam.preset as CameraPreset) ?? DEFAULT_AVATAR_CONFIG.camera.preset;
     const camera: AvatarCameraConfig = {
@@ -286,17 +307,34 @@ export function parseAvatarConfig(json: string): AvatarConfig {
         : DEFAULT_AVATAR_CONFIG.camera.fov,
     };
 
+    // Platform — с поддержкой легаси 'style' (classic/minimal/glow)
     const pl = (r.platform ?? {}) as Record<string, unknown>;
-    const plStyle = (pl.style as PlatformStyle) ?? DEFAULT_AVATAR_CONFIG.platform.style;
+    let plShape: PlatformShape;
+    if (typeof pl.shape === 'string' && ['disc', 'hexagon', 'ring', 'pedestal', 'off'].includes(pl.shape)) {
+      plShape = pl.shape as PlatformShape;
+    } else if (typeof pl.style === 'string' && pl.style in LEGACY_PLATFORM_STYLE_MAP) {
+      plShape = LEGACY_PLATFORM_STYLE_MAP[pl.style];
+    } else {
+      plShape = 'disc';
+    }
+    const ringAnim = (typeof pl.ringAnimation === 'string' && ['solid', 'pulse', 'rotate', 'breathing'].includes(pl.ringAnimation))
+      ? pl.ringAnimation as RingAnimation
+      : DEFAULT_AVATAR_CONFIG.platform.ringAnimation;
+    // Legacy: 'pulse' boolean field → если был false, ставим 'solid'
+    const legacyPulseOff = typeof pl.pulse === 'boolean' && pl.pulse === false;
     const platform: AvatarPlatformConfig = {
-      style: ['classic', 'minimal', 'glow', 'off'].includes(plStyle) ? plStyle : 'classic',
+      shape: plShape,
       radius: typeof pl.radius === 'number' && pl.radius >= 0.25 && pl.radius <= 0.65 ? pl.radius : 0.42,
+      height: typeof pl.height === 'number' && pl.height >= 0.02 && pl.height <= 0.25 ? pl.height : 0.04,
       showInnerRing: typeof pl.showInnerRing === 'boolean' ? pl.showInnerRing : true,
       showHalo: typeof pl.showHalo === 'boolean' ? pl.showHalo : true,
-      pulse: typeof pl.pulse === 'boolean' ? pl.pulse : true,
+      showShadow: typeof pl.showShadow === 'boolean' ? pl.showShadow : true,
+      ringAnimation: legacyPulseOff ? 'solid' : ringAnim,
+      rotateSpeed: typeof pl.rotateSpeed === 'number' && pl.rotateSpeed >= 0 && pl.rotateSpeed <= 3 ? pl.rotateSpeed : 0.5,
       opacity: typeof pl.opacity === 'number' && pl.opacity >= 0.2 && pl.opacity <= 1 ? pl.opacity : 0.85,
     };
 
+    // Background
     const bg = (r.background ?? {}) as Record<string, unknown>;
     const bgStyle = (bg.style as BackgroundStyle) ?? DEFAULT_AVATAR_CONFIG.background.style;
     const background: AvatarBackgroundConfig = {
@@ -305,6 +343,7 @@ export function parseAvatarConfig(json: string): AvatarConfig {
       edgeColor: typeof bg.edgeColor === 'string' ? bg.edgeColor : DEFAULT_AVATAR_CONFIG.background.edgeColor,
     };
 
+    // Lighting
     const lt = (r.lighting ?? {}) as Record<string, unknown>;
     const ltPreset = (lt.preset as LightingPreset) ?? DEFAULT_AVATAR_CONFIG.lighting.preset;
     const lighting: AvatarLightingConfig = {
@@ -314,15 +353,25 @@ export function parseAvatarConfig(json: string): AvatarConfig {
         : 1.0,
     };
 
+    // Animation — с дефолтами для новых полей
     const an = (r.animation ?? {}) as Record<string, unknown>;
     const animation: AvatarAnimationConfig = {
       breathing: typeof an.breathing === 'boolean' ? an.breathing : true,
       blinking: typeof an.blinking === 'boolean' ? an.blinking : true,
       headSway: typeof an.headSway === 'boolean' ? an.headSway : true,
+      bodySway: typeof an.bodySway === 'boolean' ? an.bodySway : true,
+      armSway: typeof an.armSway === 'boolean' ? an.armSway : true,
+      weightShift: typeof an.weightShift === 'boolean' ? an.weightShift : true,
+      gazeFollow: typeof an.gazeFollow === 'boolean' ? an.gazeFollow : true,
       lipSync: typeof an.lipSync === 'boolean' ? an.lipSync : true,
       emotionMorph: typeof an.emotionMorph === 'boolean' ? an.emotionMorph : true,
+      emotionPose: typeof an.emotionPose === 'boolean' ? an.emotionPose : true,
+      idleFrequency: typeof an.idleFrequency === 'number' && an.idleFrequency >= 0.2 && an.idleFrequency <= 3
+        ? an.idleFrequency
+        : 1.0,
     };
 
+    // Body
     const bd = (r.body ?? {}) as Record<string, unknown>;
     const bdPose = (bd.armPose as ArmPose) ?? DEFAULT_AVATAR_CONFIG.body.armPose;
     const body: AvatarBodyConfig = {

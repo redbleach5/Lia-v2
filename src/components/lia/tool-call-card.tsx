@@ -1,7 +1,7 @@
 'use client';
 
 import { cn } from '@/lib/utils';
-import { Search, FileText, Loader2, Check, AlertCircle } from 'lucide-react';
+import { Search, FileText, Loader2, Check, AlertCircle, type LucideIcon } from 'lucide-react';
 
 type ToolCallCardProps = {
   name: string;
@@ -13,7 +13,7 @@ export function ToolCallCard({ name, input, output }: ToolCallCardProps) {
   const isSearch = name === 'web_search';
   const isSave = name === 'save_artifact';
 
-  const icon = isSearch ? Search : isSave ? FileText : FileText;
+  const Icon: LucideIcon = isSearch ? Search : isSave ? FileText : FileText;
   const title = isSearch ? 'Поиск в интернете' : isSave ? 'Сохранён файл' : name;
 
   // For save_artifact: show download link
@@ -24,7 +24,7 @@ export function ToolCallCard({ name, input, output }: ToolCallCardProps) {
   return (
     <div className="rounded-md border border-border bg-surface/50 overflow-hidden">
       <div className="px-3 py-2 flex items-center gap-2 border-b border-border">
-        {icon && <icon className="w-3.5 h-3.5 text-accent shrink-0" />}
+        <Icon className="w-3.5 h-3.5 text-accent shrink-0" />
         <span className="text-xs font-medium">{title}</span>
         <Check className="w-3 h-3 text-success ml-auto" />
       </div>

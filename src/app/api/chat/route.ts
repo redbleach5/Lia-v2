@@ -197,7 +197,7 @@ export async function POST(req: NextRequest) {
       ? (userMode === 'agent' ? isStepCount(5) : isStepCount(1))
       : isStepCount(1),
     temperature: 0.7,
-    maxTokens: plan.maxTokens,
+    maxOutputTokens: plan.maxTokens,
     topP: 0.9,
     onFinish: async ({ text: fullText, usage }) => {
       const durationMs = Date.now() - startTime;
@@ -208,8 +208,8 @@ export async function POST(req: NextRequest) {
           content: fullText,
           emotionJson: JSON.stringify(perceivedEmotion),
           toolCallsJson: toolCallLog.length > 0 ? JSON.stringify(toolCallLog) : null,
-          tokensIn: usage?.promptTokens ?? null,
-          tokensOut: usage?.completionTokens ?? null,
+          tokensIn: usage?.inputTokens ?? null,
+          tokensOut: usage?.outputTokens ?? null,
           durationMs,
         });
       } catch (e) {
@@ -325,7 +325,7 @@ async function runDeliberate(userMessage: string, emotion: EmotionVector, tier: 
       system: 'Ты — внутренний аналитический модуль Лии. Анализируй вопрос, не отвечай на него.',
       messages: [{ role: 'user', content: prompt }],
       temperature: 0.4,
-      maxTokens: 400,
+      maxOutputTokens: 400,
     });
     return await result.text;
   } catch (e) {

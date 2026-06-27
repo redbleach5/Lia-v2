@@ -87,14 +87,14 @@ export async function listAgentTasks(episodeId?: string): Promise<AgentTask[]> {
 
 export async function updateAgentTask(id: string, params: Partial<{
   status: AgentTaskStatus;
-  planJson: string;
+  planJson: string | null;
   currentStep: number;
   stepsJson: string;
-  startedAt: Date;
-  completedAt: Date;
-  error: string;
-  checkpointJson: string;
-  resultSummary: string;
+  startedAt: Date | null;
+  completedAt: Date | null;
+  error: string | null;
+  checkpointJson: string | null;
+  resultSummary: string | null;
   artifactsJson: string;
 }>): Promise<AgentTask | null> {
   try {

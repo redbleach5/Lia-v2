@@ -123,6 +123,19 @@ export async function recordEmotionalAnchor(params: {
     }
 
     // Store in Prisma
+    // NOTE: Prisma's `Bytes` type is `ReturnType<Uint8Array['slice']>` = `Uint8Array<ArrayBuffer>`.
+    // `Buffer.from(float32.buffer, offset, length)` produces `Buffer<ArrayBufferLike>`
+    // (where ArrayBufferLike may be SharedArrayBuffer), which TS rejects.
+    // Solution: allocate a fresh `ArrayBuffer` and copy bytes into a `Uint8Array` view on it.
+    // This produces a strict `Uint8Array<ArrayBuffer>` that satisfies Prisma's `Bytes` type.
+    let embeddingBytes: Uint8Array<ArrayBuffer> | null = null;
+    if (embedding) {
+      const ab = new ArrayBuffer(embedding.byteLength);
+      const view = new Uint8Array(ab);
+      view.set(new Uint8Array(embedding.buffer, embedding.byteOffset, embedding.byteLength));
+      embeddingBytes = view;
+    }
+
     const record = await db.emotionalMemory.create({
       data: {
         episodeId,
@@ -131,7 +144,7 @@ export async function recordEmotionalAnchor(params: {
         trigger: trigger.slice(0, 200),
         context: context.slice(0, 1000),
         emotionVectorJson: emotionVector ? JSON.stringify(emotionVector) : null,
-        embedding: embedding ? Buffer.from(embedding.buffer, embedding.byteOffset, embedding.byteLength) : null,
+        embedding: embeddingBytes,
       },
     });
 

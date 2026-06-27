@@ -13,7 +13,7 @@ import { saveArtifact } from './save-artifact';
 // ============================================================================
 const webSearchTool = tool({
   description: 'Поиск в интернете для актуальной/фактологической информации. Возвращает топ-10 результатов: title, url, snippet. Используй когда: версии библиотек, свежие события, документация, ошибки с кодами. НЕ используй для философии, личных советов, математики.',
-  parameters: z.object({
+  inputSchema: z.object({
     query: z.string().min(1).describe('Поисковый запрос (русский или английский)'),
   }),
   execute: async ({ query }) => {
@@ -26,13 +26,15 @@ const webSearchTool = tool({
 // ============================================================================
 const saveArtifactTool = tool({
   description: 'Сохранить артефакт (SVG, HTML, код, текст) как файл для пользователя. Используй когда сгенерировала SVG-логотип, HTML-страницу, скрипт, конфиг и т.п. Пользователь увидит карточку с превью и кнопкой "Скачать".',
-  parameters: z.object({
+  inputSchema: z.object({
     filename: z.string().min(1).describe('Имя файла, например "logo.svg" или "script.py"'),
     content: z.string().min(1).describe('Полное содержимое файла'),
-    mime: z.string().optional().describe('MIME-тип, например "image/svg+xml" или "text/plain"'),
+    // .default() вместо .optional() — даёт корректный вывод типа для AI SDK v7
+    // и одновременно обеспечивает дефолтное значение, если модель его не передаст.
+    mime: z.string().default('text/plain').describe('MIME-тип, например "image/svg+xml" или "text/plain"'),
   }),
   execute: async ({ filename, content, mime }) => {
-    return await saveArtifact({ filename, content, mime: mime ?? 'text/plain' });
+    return await saveArtifact({ filename, content, mime });
   },
 });
 

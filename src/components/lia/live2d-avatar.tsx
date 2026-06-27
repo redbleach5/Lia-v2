@@ -21,7 +21,8 @@ export type Live2DAvatarProps = {
 
 export function Live2DAvatar({ emotion, speaking = false, size = 280, src }: Live2DAvatarProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const appRef = useRef<ReturnType<typeof import('pixi.js').Application> | null>(null);
+  // Pixi v6 Application — тип конструктора не подходит под ReturnType, используем any
+  const appRef = useRef<any>(null);
   const modelRef = useRef<Live2DModelProxy | null>(null);
 
   // Init PixiJS app + draw stylized avatar

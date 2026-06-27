@@ -5,7 +5,7 @@
 //
 // Все FS-операции ограничены fsScope задачи (path prefix). Без fsScope — отказ.
 
-import { tool } from 'ai';
+import { tool, type ToolSet } from 'ai';
 import { z } from 'zod';
 import { readFile, writeFile, readdir, stat, mkdir } from 'fs/promises';
 import { join, resolve, relative, isAbsolute } from 'path';
@@ -38,7 +38,7 @@ function safePathWithinScope(path: string, scope: string | null): string | null 
 function makeReadFileTool(task: AgentTask) {
   return tool({
     description: 'Прочитать содержимое файла внутри рабочей директории задачи. Возвращает текст (для текстовых файлов) или base64 (для бинарных).',
-    parameters: z.object({
+    inputSchema: z.object({
       path: z.string().min(1).describe('Путь относительно рабочей директории'),
       maxBytes: z.number().optional().default(50_000).describe('Лимит байт (по умолчанию 50000)'),
     }),
@@ -70,7 +70,7 @@ function makeReadFileTool(task: AgentTask) {
 function makeWriteFileTool(task: AgentTask) {
   return tool({
     description: 'Записать файл внутри рабочей директории задачи. Создаёт промежуточные директории. Перезаписывает существующие файлы.',
-    parameters: z.object({
+    inputSchema: z.object({
       path: z.string().min(1).describe('Путь относительно рабочей директории'),
       content: z.string().min(0).describe('Содержимое файла (текст)'),
     }),
@@ -99,7 +99,7 @@ function makeWriteFileTool(task: AgentTask) {
 function makeListDirTool(task: AgentTask) {
   return tool({
     description: 'Получить список файлов и поддиректорий в указанной директории. Без аргументов — корень рабочей директории.',
-    parameters: z.object({
+    inputSchema: z.object({
       path: z.string().optional().default('.').describe('Путь относительно рабочей директории (по умолчанию ".")'),
     }),
     execute: async ({ path }) => {
@@ -140,7 +140,7 @@ function isPrivateHost(hostname: string): boolean {
 function makeHttpRequestTool() {
   return tool({
     description: 'Выполнить HTTP GET-запрос к указанному URL. Возвращает статус, заголовки, тело (до 10000 символов). Блокирует private/internal IP.',
-    parameters: z.object({
+    inputSchema: z.object({
       url: z.string().url().describe('Полный URL включая схему (http/https)'),
     }),
     execute: async ({ url }) => {
@@ -175,7 +175,7 @@ function makeHttpRequestTool() {
 function makeAskUserTool(task: AgentTask) {
   return tool({
     description: 'Задать уточняющий вопрос пользователю и приостановить задачу до получения ответа. Используй когда: неточно понятно требование, нужно подтвердить опасное действие, не хватает информации для продолжения.',
-    parameters: z.object({
+    inputSchema: z.object({
       question: z.string().min(1).describe('Чёткий вопрос пользователю'),
     }),
     execute: async ({ question }) => {
@@ -209,7 +209,7 @@ function makeAskUserTool(task: AgentTask) {
 function makeSpawnSubagentTool() {
   return tool({
     description: 'Породить под-агента для параллельной подзадачи. ВНИМАНИЕ: в текущей версии не поддерживается — используйте последовательные шаги.',
-    parameters: z.object({
+    inputSchema: z.object({
       goal: z.string().min(1),
       tools: z.array(z.string()).optional(),
     }),
@@ -225,16 +225,16 @@ function makeSpawnSubagentTool() {
 // ============================================================================
 // Build tool registry for a specific task
 // ============================================================================
-export function buildAgentTools(task: AgentTask): Record<string, ReturnType<typeof tool>> {
-  const tools: Record<string, ReturnType<typeof tool>> = {
+export function buildAgentTools(task: AgentTask): ToolSet {
+  const tools: ToolSet = {
     web_search: tool({
       description: 'Поиск в интернете (DuckDuckGo). Возвращает топ-10 результатов: title, url, snippet.',
-      parameters: z.object({ query: z.string().min(1) }),
+      inputSchema: z.object({ query: z.string().min(1) }),
       execute: async ({ query }) => await webSearch(query),
     }),
     save_artifact: tool({
       description: 'Сохранить артефакт (SVG, HTML, код, текст) как файл для пользователя.',
-      parameters: z.object({
+      inputSchema: z.object({
         filename: z.string().min(1),
         content: z.string().min(1),
         mime: z.string().optional().default('text/plain'),
@@ -267,7 +267,7 @@ export function buildAgentTools(task: AgentTask): Record<string, ReturnType<type
       whitelist = JSON.parse(task.toolsWhitelist);
     } catch { /* ignore — give all tools */ }
     if (Array.isArray(whitelist) && whitelist.length > 0) {
-      const filtered: Record<string, ReturnType<typeof tool>> = {};
+      const filtered: ToolSet = {};
       for (const name of whitelist) {
         if (name in tools) filtered[name] = tools[name];
       }
@@ -281,7 +281,7 @@ export function buildAgentTools(task: AgentTask): Record<string, ReturnType<type
 /**
  * Format tool list for the system prompt (so the model knows what's available).
  */
-export function describeTools(tools: Record<string, ReturnType<typeof tool>>): string {
+export function describeTools(tools: ToolSet): string {
   return Object.entries(tools)
     .map(([name]) => `- ${name}`)
     .join('\n');

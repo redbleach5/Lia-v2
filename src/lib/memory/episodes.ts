@@ -116,11 +116,11 @@ export type ChatMessage = {
 export async function saveMessage(episodeId: string, params: {
   role: 'user' | 'companion' | 'tool' | 'system';
   content: string;
-  emotionJson?: string;
-  toolCallsJson?: string;
-  tokensIn?: number;
-  tokensOut?: number;
-  durationMs?: number;
+  emotionJson?: string | null;
+  toolCallsJson?: string | null;
+  tokensIn?: number | null;
+  tokensOut?: number | null;
+  durationMs?: number | null;
 }): Promise<ChatMessage> {
   const msg = await db.message.create({
     data: {

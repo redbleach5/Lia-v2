@@ -35,7 +35,7 @@ export async function POST(
 
     // Reset to pending if was waiting_input (resume case)
     if (task.status === 'waiting_input' || task.status === 'failed') {
-      await updateAgentTask(id, { status: 'pending', error: null });
+      await updateAgentTask(id, { status: 'pending', error: undefined });
     }
 
     // Trigger runner in background — don't await

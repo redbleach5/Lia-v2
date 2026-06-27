@@ -186,18 +186,21 @@ export function searchVectorsInEpisode(params: {
   // distance is cosine distance (0=identical, 2=opposite). similarity = 1 - distance.
 
   try {
+    // vec0 requires LIMIT on the KNN query itself (not just SQL LIMIT)
+    // Format: ... MATCH ? AND k = ? ... or ... MATCH ? ORDER BY distance LIMIT ?
+    // The k constraint must be in the WHERE clause alongside MATCH
     const stmt = db.prepare(`
       SELECT v.rowid, v.distance, m.vector_id as id
       FROM vec_virtual v
       JOIN vec_rowid_map m ON v.rowid = m.rowid
       WHERE m.episode_id = ?
         AND v.embedding MATCH vec_f32(?)
+        AND v.k = ?
         AND v.distance <= ?
       ORDER BY v.distance
-      LIMIT ?
     `);
 
-    const rows = stmt.all(episodeId, embeddingStr, 1 - minSimilarity, limit) as Array<{
+    const rows = stmt.all(episodeId, embeddingStr, limit, 1 - minSimilarity) as Array<{
       rowid: number;
       distance: number;
       id: string;

@@ -183,12 +183,19 @@ export async function POST(req: NextRequest) {
   const startTime = Date.now();
   const toolCallLog: Array<{ name: string; input: unknown; output: unknown }> = [];
 
+  // Some models (gemma3:4b, etc.) don't support tools — detect and disable
+  const modelName = (model as unknown as { modelId?: string }).modelId ?? '';
+  const noToolModels = ['gemma3:4b', 'gemma3:1b', 'phi3', 'tinyllama'];
+  const toolsSupported = !noToolModels.some(m => modelName.includes(m));
+
   const result = streamText({
     model,
     system: systemPrompt + (deliberateContext ? `\n\nВНУТРЕННИЙ АНАЛИЗ:\n${deliberateContext}` : ''),
     messages: coreMessages,
-    tools: plan.toolsEnabled ? tools : undefined,
-    stopWhen: userMode === 'agent' ? isStepCount(5) : isStepCount(1),
+    tools: plan.toolsEnabled && toolsSupported ? tools : undefined,
+    stopWhen: (plan.toolsEnabled && toolsSupported)
+      ? (userMode === 'agent' ? isStepCount(5) : isStepCount(1))
+      : isStepCount(1),
     temperature: 0.7,
     maxTokens: plan.maxTokens,
     topP: 0.9,
@@ -272,6 +279,7 @@ export async function POST(req: NextRequest) {
   });
 
   // ── 11. Response with metadata in headers ──
+  // HTTP headers must be ASCII — encode non-ASCII values
   return result.toTextStreamResponse({
     headers: {
       'Content-Type': 'text/plain; charset=utf-8',
@@ -279,7 +287,7 @@ export async function POST(req: NextRequest) {
       'X-Accel-Buffering': 'no',
       'X-Episode-Id': episodeId,
       'X-Message-Id': userMsg.id,
-      'X-Triggers': triggers.join(','),
+      'X-Triggers': triggers.join(',').slice(0, 100),
       'X-Emotion': JSON.stringify(perceivedEmotion),
       'X-Tier': tier,
       'X-Complexity': complexity,
@@ -289,7 +297,6 @@ export async function POST(req: NextRequest) {
       'X-SelfCheck': String(plan.selfCheck),
       'X-ModelSize': String(profile?.modelSize ?? 0),
       'X-Disagreement': disagreement.level,
-      'X-DisagreementLabel': DISAGREEMENT_LABELS_RU[disagreement.level],
     },
   });
 }

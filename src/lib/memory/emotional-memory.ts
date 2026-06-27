@@ -196,6 +196,7 @@ export async function recallEmotionalAnchors(params: {
     const embeddingStr = `[${Array.from(queryEmbedding).join(',')}]`;
 
     // Get top-N emotional anchors by semantic similarity
+    // vec0 requires k = ? constraint alongside MATCH
     const rows = vecDb.prepare(`
       SELECT v.rowid, v.distance, m.vector_id as id
       FROM vec_virtual v
@@ -203,9 +204,9 @@ export async function recallEmotionalAnchors(params: {
       WHERE m.episode_id = ?
         AND v.source_type = 'emotional'
         AND v.embedding MATCH vec_f32(?)
+        AND v.k = ?
         AND v.distance <= 0.9
       ORDER BY v.distance
-      LIMIT ?
     `).all(episodeId, embeddingStr, limit * 2) as Array<{
       rowid: number;
       distance: number;

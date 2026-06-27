@@ -200,7 +200,14 @@ export async function embed(text: string): Promise<Float32Array> {
         // Persist the auto-detected choice so we don't re-detect every call
         if (detected !== currentEmbedModel) {
           currentEmbedModel = detected;
-          await persistSetting('ollama_embed_model', detected).catch(() => null);
+          // Save to DB so we don't re-detect every call
+          try {
+            await db.setting.upsert({
+              where: { key: 'ollama_embed_model' },
+              create: { key: 'ollama_embed_model', value: detected },
+              update: { value: detected },
+            });
+          } catch { /* non-fatal */ }
         }
       } else if (!currentEmbedModel) {
         // No embed model configured AND none detected — throw clear error

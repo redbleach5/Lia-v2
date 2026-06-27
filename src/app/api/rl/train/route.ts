@@ -2,6 +2,7 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { trainSidecar } from '@/lib/rl/inference';
+import { db } from '@/lib/db';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -24,6 +25,35 @@ export async function POST(req: NextRequest) {
         { error: result.error ?? 'training failed' },
         { status: 500 },
       );
+    }
+
+    // Записываем версию в RlModelVersion — для истории и UI.
+    // Раньше версия хранилась только в Setting (rl_active_version), без метрик.
+    if (result.result) {
+      try {
+        await db.rlModelVersion.create({
+          data: {
+            version: result.result.version,
+            onnxPath: result.result.onnx_path,
+            metricsJson: JSON.stringify({
+              avgReward: result.result.avg_reward,
+              avgLoss: result.result.avg_loss,
+              avgValueLoss: result.result.avg_value_loss,
+              avgPolicyLoss: result.result.avg_policy_loss,
+              avgEntropy: result.result.avg_entropy,
+              samplesCount: result.result.samples_count,
+              durationSec: result.result.duration_sec,
+              nEpochs: nEpochs ?? 10,
+              parentVersion: parentVersion ?? null,
+            }),
+            parentVersion: parentVersion ?? null,
+          },
+        });
+        console.log(`[api/rl/train] recorded model version ${result.result.version} in RlModelVersion`);
+      } catch (e) {
+        // Non-fatal — версия уже создана в sidecar, просто не записана в БД
+        console.warn('[api/rl/train] failed to record model version (non-fatal):', e);
+      }
     }
 
     return NextResponse.json({ result: result.result });

@@ -112,6 +112,8 @@ export async function POST(req: NextRequest) {
   let rlActionId: number = 0;
   let rlConfidence = 0;
   let rlActionLabel = '';
+  let rlModelVersion: number | null = null;  // null = ONNX-модель не загружена, использован fallback
+  let rlModelLoaded = false;  // true = predictAction использовал ONNX, false = fallback
 
   try {
     // 1. Завершаем предыдущий опыт (если есть) — это reward signal для прошлого действия
@@ -167,9 +169,11 @@ export async function POST(req: NextRequest) {
     rlActionId = prediction.action;
     rlConfidence = prediction.confidence;
     rlActionLabel = ACTION_LABELS_RU[rlActionId] ?? `action_${rlActionId}`;
+    rlModelVersion = prediction.version;
+    rlModelLoaded = prediction.version !== null;
 
-    if (prediction.version !== null) {
-      console.log(`[chat] RL: predicted action=${rlActionLabel} (id=${rlActionId}, confidence=${rlConfidence.toFixed(2)}, v${prediction.version})`);
+    if (rlModelLoaded) {
+      console.log(`[chat] RL: predicted action=${rlActionLabel} (id=${rlActionId}, confidence=${rlConfidence.toFixed(2)}, v${rlModelVersion})`);
     } else {
       // Модель не загружена — используем fallback после получения ответа
       console.log('[chat] RL: no ONNX model, will use fallback heuristic after response');
@@ -327,10 +331,10 @@ export async function POST(req: NextRequest) {
       }
 
       // RL experience — записываем (state, action) для будущего обучения.
-      // Если ONNX-модель была загружена — используем предсказанный action.
-      // Если нет — используем fallback-эвристику на основе текста ответа.
+      // Если ONNX-модель была загружена — используем предсказанный action + version.
+      // Если нет — используем fallback-эвристику на основе текста ответа, policyVersion=null.
       try {
-        const finalActionId = rlConfidence > 0
+        const finalActionId = rlModelLoaded
           ? rlActionId  // модель предсказала
           : fallbackActionId(fullText, userMode);  // fallback по тексту ответа
 
@@ -349,11 +353,12 @@ export async function POST(req: NextRequest) {
           state: rlState,
           action: finalActionId,
           episodeId,
-          // policyVersion: null means "no model was used for this prediction"
-          // (will be filled by the sidecar when it reads the record)
-          policyVersion: undefined,
+          // policyVersion: версия ONNX-модели которая предсказала action.
+          // null = fallback (модель не загружена). Python sidecar использует это
+          // для off-policy corrections при обучении.
+          policyVersion: rlModelLoaded ? rlModelVersion ?? undefined : undefined,
         });
-        console.log(`[chat] RL: recorded experience ${rlExperienceId.slice(0, 8)}, action=${ACTION_LABELS_RU[finalActionId] ?? finalActionId}`);
+        console.log(`[chat] RL: recorded experience ${rlExperienceId.slice(0, 8)}, action=${ACTION_LABELS_RU[finalActionId] ?? finalActionId}, policyVersion=${rlModelLoaded ? rlModelVersion : 'null'}`);
       } catch (e) {
         console.warn('[api/chat] RL experience record failed (non-fatal):', e);
       }
@@ -368,13 +373,36 @@ export async function POST(req: NextRequest) {
       }).catch(e => console.warn('[api/chat] fact extraction failed (non-fatal):', e));
 
       // Self-check — проверка качества ответа (если запланирована).
-      // Работает в фоне: логирует проблемы, не блокирует стрим.
-      // В future work может стать негативным reward signal для RL.
+      // Работает в фоне. Если находит проблемы (severity != ok), корректирует
+      // reward последнего RL experience — негативный signal для обучения.
       if (shouldSelfCheck(plan)) {
         runSelfCheck({
           userMessage: text,
           liaResponse: fullText,
           episodeId,
+        }).then(async (checkResult) => {
+          if (checkResult.severity !== 'ok' && rlExperienceId) {
+            try {
+              // Загружаем текущий experience, корректируем reward
+              const { findLastIncompleteExperience, completeExperience, computeRewardLocally } = await import('@/lib/rl/recorder');
+              const exp = await findLastIncompleteExperience(episodeId);
+              if (exp && exp.id === rlExperienceId) {
+                // Негативная коррекция reward на основе severity
+                const penalty = checkResult.severity === 'major' ? -0.5 : -0.2;
+                const currentReward = exp.reward;  // исходный reward (0 на этом этапе)
+                const adjustedReward = currentReward + penalty;
+                // Пересохраняем с тем же nextState но скорректированным reward
+                // (signals уже записаны, только обновляем reward)
+                await db.rLExperience.update({
+                  where: { id: rlExperienceId },
+                  data: { reward: adjustedReward },
+                });
+                console.log(`[chat] self-check: adjusted reward for ${rlExperienceId.slice(0, 8)} by ${penalty} (${checkResult.severity})`);
+              }
+            } catch (e) {
+              console.warn('[chat] self-check reward adjustment failed (non-fatal):', e);
+            }
+          }
         }).catch(e => console.warn('[api/chat] self-check failed (non-fatal):', e));
       }
     },

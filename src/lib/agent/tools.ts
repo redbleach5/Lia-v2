@@ -202,22 +202,194 @@ function makeAskUserTool(task: AgentTask) {
 }
 
 // ============================================================================
-// spawn_subagent — породить подзадачу
+// file_search — поиск файлов по содержимому внутри fsScope.
+//
+// Рекурсивно обходит директории, читает текстовые файлы (до 50KB),
+// ищет подстроку (case-insensitive). Возвращает список совпадений
+// с путём, строкой и контекстом.
 // ============================================================================
-// MVP: заглушка — возвращает ошибку, что sub-agents пока не поддерживаются.
-// Полноценная реализация требует очереди задач и зависимостей.
-function makeSpawnSubagentTool() {
+function makeFileSearchTool(task: AgentTask) {
   return tool({
-    description: 'Породить под-агента для параллельной подзадачи. ВНИМАНИЕ: в текущей версии не поддерживается — используйте последовательные шаги.',
+    description: 'Найти файлы по содержимому внутри рабочей директории. Рекурсивно обходит поддиректории, ищет подстроку (case-insensitive) в текстовых файлах. Возвращает до 20 совпадений с путём, номером строки и контекстом. Используй когда нужно найти где упоминается функция/класс/переменная.',
     inputSchema: z.object({
-      goal: z.string().min(1),
-      tools: z.array(z.string()).optional(),
+      query: z.string().min(1).describe('Подстрока для поиска (case-insensitive)'),
+      maxResults: z.number().default(20).describe('Максимум результатов (по умолчанию 20)'),
+      filePattern: z.string().default('').describe('Фильтр по расширению, например "ts" или "py" (пусто = все)'),
     }),
-    execute: async ({ goal }) => {
-      return {
-        error: 'Sub-agents не поддерживаются в текущей версии. Выполняйте подзадачи последовательно в рамках текущего агента.',
-        goal,
-      };
+    execute: async ({ query, maxResults, filePattern }) => {
+      if (!task.fsScope) {
+        return { error: 'У задачи нет рабочей директории (fsScope). Поиск файлов запрещён.' };
+      }
+
+      const scopePath = safePathWithinScope('.', task.fsScope);
+      if (!scopePath) {
+        return { error: 'Не удалось определить рабочую директорию' };
+      }
+
+      try {
+        const results: Array<{ path: string; line: number; context: string }> = [];
+        const queryLower = query.toLowerCase();
+
+        // Рекурсивный обход директорий
+        const walkDir = async (dirPath: string, relativePath: string) => {
+          if (results.length >= maxResults) return;
+
+          const entries = await readdir(dirPath, { withFileTypes: true });
+          for (const entry of entries) {
+            if (results.length >= maxResults) return;
+
+            // Пропускаем служебные директории
+            if (entry.name.startsWith('.') || entry.name === 'node_modules' || entry.name === '__pycache__') {
+              continue;
+            }
+
+            const entryRelative = relativePath ? `${relativePath}/${entry.name}` : entry.name;
+            const entryPath = join(dirPath, entry.name);
+
+            if (entry.isDirectory()) {
+              await walkDir(entryPath, entryRelative);
+            } else if (entry.isFile()) {
+              // Фильтр по расширению (пустая строка = все файлы)
+              if (filePattern) {
+                const ext = entry.name.split('.').pop()?.toLowerCase();
+                if (ext !== filePattern.toLowerCase()) continue;
+              }
+
+              // Только текстовые файлы (по расширению)
+              const textExts = ['ts', 'tsx', 'js', 'jsx', 'py', 'json', 'md', 'txt', 'yaml', 'yml', 'sh', 'css', 'html', 'sql', 'prisma'];
+              const ext = entry.name.split('.').pop()?.toLowerCase();
+              if (!ext || !textExts.includes(ext)) continue;
+
+              try {
+                const statResult = await stat(entryPath);
+                if (statResult.size > 50_000) continue; // пропускаем большие файлы
+
+                const content = await readFile(entryPath, 'utf8');
+                const lines = content.split('\n');
+
+                for (let i = 0; i < lines.length; i++) {
+                  if (results.length >= maxResults) break;
+                  if (lines[i].toLowerCase().includes(queryLower)) {
+                    const contextStart = Math.max(0, i - 1);
+                    const contextEnd = Math.min(lines.length, i + 2);
+                    const context = lines.slice(contextStart, contextEnd).join('\n');
+                    results.push({
+                      path: entryRelative,
+                      line: i + 1,
+                      context: context.slice(0, 300),
+                    });
+                  }
+                }
+              } catch {
+                // пропускаем файлы которые не удалось прочитать
+              }
+            }
+          }
+        };
+
+        await walkDir(scopePath, '');
+
+        return {
+          query,
+          results,
+          count: results.length,
+          truncated: results.length >= maxResults,
+        };
+      } catch (e) {
+        return { error: e instanceof Error ? e.message : String(e) };
+      }
+    },
+  });
+}
+
+// ============================================================================
+// spawn_subagent — породить подзадачу и дождаться её результата.
+//
+// Реализация: создаёт дочернюю AgentTask с parentTaskId, запускает
+// runAgentTask (синхронно ждёт завершения), возвращает resultSummary.
+//
+// Ограничения:
+//   - Под-агент выполняется последовательно (не параллельно) — текущий шаг
+//     блокируется до завершения под-агента.
+//   - Под-агент наследует episodeId и fsScope от родителя.
+//   - maxSteps для под-агента = 8 (меньше, чем у корневого, чтобы избежать
+//     бесконечной рекурсии).
+//   - Глубина рекурсии ограничена 2 (под-агент не может породить под-агента).
+// ============================================================================
+function makeSpawnSubagentTool(task: AgentTask) {
+  return tool({
+    description: 'Породить под-агента для автономной подзадачи. Под-агент выполнит задачу самостоятельно и вернёт результат. Используй когда подзадача требует нескольких шагов (поиск + анализ, чтение нескольких файлов и т.п.). НЕ используй для простых действий — делай их сам.',
+    inputSchema: z.object({
+      goal: z.string().min(1).describe('Чёткая формулировка подзадачи для под-агента'),
+      tools: z.array(z.string()).default([]).describe('Список инструментов для под-агента (по умолчанию все)'),
+    }),
+    execute: async ({ goal, tools: toolWhitelist }) => {
+      // Проверяем глубину рекурсии — под-агент не может породить под-агента.
+      // Это предотвращает бесконечную рекурсию.
+      if (task.parentTaskId !== null) {
+        return {
+          error: 'Достигнута максимальная глубина под-агентов (1 уровень). Выполняйте подзадачу последовательно в рамках текущего агента.',
+          goal,
+        };
+      }
+
+      try {
+        // Импортируем здесь чтобы избежать circular dependency
+        // (runner.ts импортирует tools.ts через buildAgentTools)
+        const { createAgentTask } = await import('./task');
+        const { runAgentTask } = await import('./runner');
+
+        // Создаём дочернюю задачу
+        const subTask = await createAgentTask({
+          episodeId: task.episodeId,
+          goal,
+          parentTaskId: task.id,
+          toolsWhitelist: toolWhitelist && toolWhitelist.length > 0 ? toolWhitelist : null,
+          fsScope: task.fsScope,
+          maxSteps: 8,  // меньше, чем у корневого
+          maxDurationSec: Math.min(300, task.maxDurationSec),  // максимум 5 мин
+        });
+
+        // Запускаем и ждём завершения (блокирует текущий шаг)
+        await runAgentTask(subTask.id);
+
+        // Получаем результат
+        const { getAgentTask } = await import('./task');
+        const completed = await getAgentTask(subTask.id);
+
+        if (!completed) {
+          return { error: 'Под-агент завершился без результата', goal, subTaskId: subTask.id };
+        }
+
+        if (completed.status === 'failed') {
+          return {
+            error: `Под-агент не смог выполнить задачу: ${completed.error ?? 'неизвестная ошибка'}`,
+            goal,
+            subTaskId: subTask.id,
+          };
+        }
+
+        if (completed.status === 'cancelled') {
+          return {
+            error: 'Под-агент был отменён',
+            goal,
+            subTaskId: subTask.id,
+          };
+        }
+
+        return {
+          goal,
+          subTaskId: subTask.id,
+          status: completed.status,
+          result: completed.resultSummary ?? '(под-агент не вернул результат)',
+          stepsCount: completed.currentStep,
+        };
+      } catch (e) {
+        return {
+          error: `Не удалось запустить под-агента: ${e instanceof Error ? e.message : String(e)}`,
+          goal,
+        };
+      }
     },
   });
 }
@@ -255,9 +427,10 @@ export function buildAgentTools(task: AgentTask): ToolSet {
     read_file: makeReadFileTool(task),
     write_file: makeWriteFileTool(task),
     list_dir: makeListDirTool(task),
+    file_search: makeFileSearchTool(task),
     http_request: makeHttpRequestTool(),
     ask_user: makeAskUserTool(task),
-    spawn_subagent: makeSpawnSubagentTool(),
+    spawn_subagent: makeSpawnSubagentTool(task),
   };
 
   // Apply whitelist if set
@@ -280,9 +453,90 @@ export function buildAgentTools(task: AgentTask): ToolSet {
 
 /**
  * Format tool list for the system prompt (so the model knows what's available).
+ *
+ * Выводит имя + описание + краткий список параметров с типами.
+ * Это используется в PLAN-промпте (где tools не передаются в streamText,
+ * поэтому planner не видит JSON-схем нативно) и в EXECUTE-промпте.
+ *
+ * Формат:
+ *   - web_search: Поиск в интернете (DuckDuckGo)...
+ *       query (string, required): Поисковый запрос
+ *   - save_artifact: Сохранить артефакт...
+ *       filename (string, required): Имя файла
+ *       content (string, required): Полное содержимое
+ *       mime (string, optional): MIME-тип
  */
 export function describeTools(tools: ToolSet): string {
   return Object.entries(tools)
-    .map(([name]) => `- ${name}`)
+    .map(([name, toolDef]) => {
+      const lines: string[] = [`- ${name}`];
+
+      // Description
+      const desc = typeof toolDef?.description === 'string' ? toolDef.description : '';
+      if (desc) {
+        lines.push(`    ${desc.slice(0, 200)}`);
+      }
+
+      // Parameters — извлекаем из Zod-схемы через _def.shape или _def.schema
+      const params = extractZodParams(toolDef?.inputSchema);
+      if (params.length > 0) {
+        for (const p of params) {
+          const reqStr = p.required ? 'required' : 'optional';
+          lines.push(`    ${p.name} (${p.type}, ${reqStr})${p.description ? ': ' + p.description : ''}`);
+        }
+      }
+
+      return lines.join('\n');
+    })
     .join('\n');
+}
+
+// ============================================================================
+// Helper: извлечь параметры из Zod-схемы (v3 или v4)
+// ============================================================================
+type ZodParam = { name: string; type: string; required: boolean; description?: string };
+
+function extractZodParams(schema: unknown): ZodParam[] {
+  try {
+    // Zod v3: _def.shape() возвращает объект ZodType по полям
+    // Zod v4: _def.shape тоже работает
+    const s = schema as { _def?: { shape?: () => Record<string, unknown> } };
+    if (!s?._def?.shape) return [];
+
+    const shape = s._def.shape();
+    const params: ZodParam[] = [];
+
+    for (const [name, field] of Object.entries(shape)) {
+      const f = field as {
+        _def?: { typeName?: string; description?: string };
+        description?: string;
+        isOptional?: () => boolean;
+      };
+
+      // Тип — извлекаем из typeName
+      const typeName = f?._def?.typeName ?? 'unknown';
+      const type = zodTypeNameToSimple(typeName);
+
+      // Optional?
+      const required = !(typeof f?.isOptional === 'function' && f.isOptional());
+
+      // Description — может быть в _def.description или в .description
+      const description = f?._def?.description ?? f?.description;
+
+      params.push({ name, type, required, description });
+    }
+
+    return params;
+  } catch {
+    return [];
+  }
+}
+
+function zodTypeNameToSimple(typeName: string): string {
+  if (typeName.includes('String')) return 'string';
+  if (typeName.includes('Number')) return 'number';
+  if (typeName.includes('Boolean')) return 'boolean';
+  if (typeName.includes('Array')) return 'array';
+  if (typeName.includes('Object')) return 'object';
+  return 'string';
 }

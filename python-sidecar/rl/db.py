@@ -18,12 +18,12 @@ Schema (Prisma):
         irritationDelta Float @default(0)
         userMessage  String   @default("")
         episodeId    String?
+        policyVersion Int?
         createdAt    DateTime @default(now())
     }
 
-Note: this table doesn't exist in the current Prisma schema — we'll add it
-in the Next.js side via a migration. For now, this module gracefully handles
-the table-not-found case.
+The table is created by Prisma on `bun run db:push`. This module gracefully
+handles the table-not-found case (returns empty list / 0 count).
 """
 
 from __future__ import annotations
@@ -102,6 +102,7 @@ def load_transitions(db_path: Optional[str] = None, limit: int = 10000) -> list[
                    userResponded, responseLatencySec, messageLength,
                    wasRepeated, irritationDelta, userMessage
             FROM RLExperience
+            WHERE userResponded = 1
             ORDER BY createdAt DESC
             LIMIT ?
             """,

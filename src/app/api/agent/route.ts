@@ -3,14 +3,25 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { listAgentTasks, createAgentTask, type AgentTaskStatus } from '@/lib/agent/task';
-import { runAgentTask } from '@/lib/agent/runner';
+import { runAgentTask, sweepStaleTasks } from '@/lib/agent/runner';
 import { getCognitiveParams } from '@/lib/capability-profile';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
+// Sweep flag — in-memory, prevents multiple sweeps per process lifetime.
+// Sweep помечает stale задачи (planning/executing/...) как failed.
+// Выполняется один раз при первом обращении к /api/agent после старта сервера.
+let sweepDone = false;
+
 export async function GET(req: NextRequest) {
   try {
+    // Lazy sweep on first call — помечаем зависшие задачи после рестарта.
+    if (!sweepDone) {
+      sweepDone = true;
+      await sweepStaleTasks().catch(() => null);
+    }
+
     const episodeId = req.nextUrl.searchParams.get('episodeId') ?? undefined;
     const status = req.nextUrl.searchParams.get('status') as AgentTaskStatus | null;
 

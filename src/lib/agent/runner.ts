@@ -67,6 +67,50 @@ export function isRunning(taskId: string): boolean {
 }
 
 // ============================================================================
+// Sweep stale tasks — вызывается при старте сервера.
+//
+// При рестарте Next.js процесса все задачи в transient-статусах
+// (planning/executing/waiting_input/synthesizing) остаются «висеть» в БД
+// навсегда, потому что activeRunners (in-memory Set) пуст.
+//
+// Эта функция помечает такие задачи как 'failed' с описанием ошибки,
+// чтобы пользователь мог их увидеть и при желании перезапустить через
+// /api/agent/[id]/start (который умеет resume для failed задач).
+//
+// Полный resume с продолжением с того же шага требует persistent queue
+// (Inngest/BullMQ) — пока не реализован, но данные в stepsJson сохранены.
+// ============================================================================
+const TRANSIENT_STATUSES = ['planning', 'executing', 'waiting_input', 'synthesizing'] as const;
+
+export async function sweepStaleTasks(): Promise<number> {
+  try {
+    // Находим все задачи в transient-статусах
+    const staleTasks = await db.agentTask.findMany({
+      where: { status: { in: [...TRANSIENT_STATUSES] } },
+      select: { id: true, status: true },
+    });
+
+    if (staleTasks.length === 0) return 0;
+
+    // Помечаем все как failed
+    await db.agentTask.updateMany({
+      where: { id: { in: staleTasks.map(t => t.id) } },
+      data: {
+        status: 'failed',
+        error: 'Сервер был перезапущен во время выполнения задачи. Перезапустите задачу для продолжения.',
+        completedAt: new Date(),
+      },
+    });
+
+    console.log(`[agent:runner] swept ${staleTasks.length} stale task(s) marked as failed`);
+    return staleTasks.length;
+  } catch (e) {
+    console.warn('[agent:runner] sweepStaleTasks failed (non-fatal):', e);
+    return 0;
+  }
+}
+
+// ============================================================================
 // Main entry point
 // ============================================================================
 export async function runAgentTask(taskId: string): Promise<void> {
@@ -121,7 +165,7 @@ export async function runAgentTask(taskId: string): Promise<void> {
 
     const steps = parseSteps(task.stepsJson);
     const agentTools = buildAgentTools(task);
-    const startTime = Date.now();
+    let startTime = Date.now();  // let — может продлеваться при resume после pauseTaskForInput
 
     let lastCancelledCheck = Date.now();
 
@@ -145,8 +189,15 @@ export async function runAgentTask(taskId: string): Promise<void> {
       // Budget check
       const elapsedSec = (Date.now() - startTime) / 1000;
       if (elapsedSec > task.maxDurationSec) {
-        await pauseTaskForInput(taskId, `Превышен лимит времени (${task.maxDurationSec} сек). Продолжить ещё на N секунд или остановиться?`);
+        // Продлеваем таймер на половину исходного лимита (минимум 60 сек)
+        const extensionSec = Math.max(60, Math.floor(task.maxDurationSec / 2));
+        await pauseTaskForInput(
+          taskId,
+          `Превышен лимит времени (${Math.floor(elapsedSec)} сек из ${task.maxDurationSec}). Продолжить ещё на ${extensionSec} сек или остановиться? Ответь "продолжить" или "стоп".`,
+        );
         if (isCancelled(taskId)) continue;
+        // Продлеваем startTime чтобы следующий budget check не сработал сразу
+        startTime = Date.now() - (task.maxDurationSec - extensionSec) * 1000;
       }
 
       // Loop detection

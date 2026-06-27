@@ -176,6 +176,9 @@ model AgentTask {
   episodeId String
   episode   Episode @relation(fields: [episodeId], references: [id], onDelete: Cascade)
 
+  // Для sub-agents: ID родительской задачи (null для корневых задач)
+  parentTaskId String?
+
   // Исходная задача пользователя
   goal String
 

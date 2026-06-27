@@ -126,10 +126,28 @@ export async function checkHardwareLimit(params: {
     // Filter to reliable sources
     const reliableSources = searchResult.results
       .filter(r => isReliableSource(r.url))
-      .slice(0, 3);
+      .slice(0, 5);
 
     // If no reliable sources — don't show notification (can't confirm)
     if (reliableSources.length === 0) return null;
+
+    // Проверка содержимого — ищем в snippets ключевые слова подтверждающие
+    // что для задачи такого класса нужна большая модель.
+    // Быстро (без LLM), проверяем presence-marker'ы.
+    const confirmatoryKeywords = [
+      'billion parameters', 'B parameters', 'large language model',
+      'reasoning capability', 'chain of thought', 'complex reasoning',
+      'model size', 'parameter count', '7B', '13B', '30B', '70B',
+      'миллиард параметров', 'размер модели', 'большие модели',
+    ];
+    const confirmedSources = reliableSources.filter(r => {
+      const text = `${r.title} ${r.snippet}`.toLowerCase();
+      return confirmatoryKeywords.some(kw => text.includes(kw.toLowerCase()));
+    });
+
+    // Если ни один источник не подтвердил — не показываем notification
+    // (раньше показывали всегда если есть reliable домен — false positive риск)
+    if (confirmedSources.length === 0) return null;
 
     // Generate message
     const message_text = generateMessage(tier, complexity);
@@ -139,7 +157,7 @@ export async function checkHardwareLimit(params: {
       id: `notif-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       type: 'hardware_limit',
       message: message_text,
-      sources: reliableSources.map(s => ({ title: s.title, url: s.url })),
+      sources: confirmedSources.slice(0, 3).map(s => ({ title: s.title, url: s.url })),
       ts: Date.now(),
     };
   } catch (e) {

@@ -63,7 +63,7 @@ const MODE_OVERRIDES: Record<Exclude<CognitiveMode, 'auto'>, Partial<ExecutionPl
     shouldCheckNotification: false,
   },
   agent: {
-    calls: 5, // placeholder — agent uses its own loop
+    calls: 0, // agent mode uses its own ReAct-loop in runner.ts, not the chat calls counter
     deliberate: true,
     selfCheck: true,
     maxTokens: 4096,

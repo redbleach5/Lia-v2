@@ -1,12 +1,14 @@
-// AgentTask — скелет для агентского режима.
-//
-// В MVP мы реализуем таблицу + API + UI, но НЕ сам runner.
-// Это «скелет», на который потом навесим Inngest-оркестрацию.
+// AgentTask — CRUD для агентских задач.
 //
 // Жизненный цикл:
-//   [pending] → [planning] → [executing] ⇄ [waiting_input] → [done]
-//                  ↓             ↓               ↓
-//              [failed]     [cancelled]     [cancelled]
+//   [pending] → [planning] → [executing] ⇄ [waiting_input] → [synthesizing] → [done]
+//                  ↓             ↓               ↓                ↓
+//              [failed]     [cancelled]     [cancelled]       [cancelled]
+//
+// Runner реализован в runner.ts (ReAct-loop с tool calling).
+// Resume после рестарта: при старте сервера sweeper помечает transient-статусы
+// как failed (см. sweepStaleTasks в runner.ts). Полный resume с checkpointJson
+// требует persistent queue (Inngest/BullMQ) — пока не реализован.
 
 import { db } from '@/lib/db';
 import { randomUUID } from 'crypto';
@@ -25,6 +27,7 @@ export type AgentTaskStatus =
 export type AgentTask = {
   id: string;
   episodeId: string;
+  parentTaskId: string | null;
   goal: string;
   status: AgentTaskStatus;
   planJson: string | null;
@@ -47,6 +50,7 @@ export type AgentTask = {
 export type CreateAgentTaskInput = {
   episodeId: string;
   goal: string;
+  parentTaskId?: string | null;
   toolsWhitelist?: string[] | null;
   fsScope?: string | null;
   maxSteps?: number;
@@ -58,6 +62,7 @@ export async function createAgentTask(input: CreateAgentTaskInput): Promise<Agen
     data: {
       id: randomUUID(),
       episodeId: input.episodeId,
+      parentTaskId: input.parentTaskId ?? null,
       goal: input.goal,
       status: 'pending',
       maxSteps: input.maxSteps ?? 15,
@@ -121,6 +126,7 @@ export async function cancelAgentTask(id: string): Promise<AgentTask | null> {
 function toAgentTask(row: {
   id: string;
   episodeId: string;
+  parentTaskId: string | null;
   goal: string;
   status: string;
   planJson: string | null;
@@ -142,6 +148,7 @@ function toAgentTask(row: {
   return {
     id: row.id,
     episodeId: row.episodeId,
+    parentTaskId: row.parentTaskId,
     goal: row.goal,
     status: row.status as AgentTaskStatus,
     planJson: row.planJson,

@@ -4,6 +4,7 @@
 // SSE. Client reconnects automatically (EventSource default).
 //
 // On connect, replays buffered events so the client catches up.
+// On disconnect, cleanup() unsubscribes + clears heartbeat — no memory leak.
 
 import { NextRequest } from 'next/server';
 import { subscribeToTask, getBufferedEvents, type AgentEvent } from '@/lib/agent/events';
@@ -24,6 +25,10 @@ export async function GET(
   }
 
   const encoder = new TextEncoder();
+
+  // cleanup объявлен в outer scope чтобы cancel() мог его вызвать.
+  // Инициализируется в start() после создания unsubscribe + heartbeat.
+  let cleanup: () => void = () => {};
 
   const stream = new ReadableStream({
     start(controller) {
@@ -55,41 +60,21 @@ export async function GET(
         }
       }, 15_000);
 
-      // Cleanup on close
-      const cleanup = () => {
+      // Cleanup function — unsubscribes + clears heartbeat.
+      // Вызывается из cancel() когда клиент отключается.
+      cleanup = () => {
         unsubscribe();
         clearInterval(heartbeat);
       };
-
-      // Next.js doesn't expose cancel on ReadableStream start callback directly,
-      // but the controller's close will trigger the stream's cancel.
-      // We store cleanup on the controller for the cancel handler.
-      (controller as unknown as { _cleanup?: () => void })._cleanup = cleanup;
     },
     cancel() {
-      // Called when client disconnects
-      // (controller is not passed here, so we use a closure)
+      // Called when client disconnects (ReadableStream API).
+      // Теперь cleanup доступен через замыкание — вызываем его.
+      cleanup();
     },
   });
 
-  // Wrap to handle cancel properly
-  const wrappedStream = new ReadableStream({
-    start(controller) {
-      const reader = stream.getReader();
-      const pump = (): Promise<void> =>
-        reader.read().then(({ done, value }) => {
-          if (done) {
-            controller.close();
-            return;
-          }
-          controller.enqueue(value);
-          return pump();
-        });
-      pump().catch(() => controller.close());
-    },
-  });
-
-  return new Response(wrappedStream, {
+  return new Response(stream, {
     headers: {
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-cache, no-transform',

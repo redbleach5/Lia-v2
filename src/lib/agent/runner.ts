@@ -136,7 +136,11 @@ export async function runAgentTask(taskId: string): Promise<void> {
     emitAgentEvent({ type: 'task_planning', taskId, ts: Date.now() });
     bufferEvent({ type: 'task_planning', taskId, ts: Date.now() });
 
-    const plan = await generatePlan(task);
+    // Build tools ONCE — used for both planning and execution.
+    const agentTools = buildAgentTools(task);
+    const toolDescriptions = describeTools(agentTools);
+
+    const plan = await generatePlan(task, toolDescriptions);
     await updateAgentTask(taskId, { planJson: JSON.stringify(plan) });
 
     emitAgentEvent({
@@ -158,8 +162,7 @@ export async function runAgentTask(taskId: string): Promise<void> {
     // Load existing steps (for resume case). Start iteration from where we left off.
     const steps = parseSteps(task.stepsJson);
     const startStep = steps.length;  // continue from existing steps
-    const agentTools = buildAgentTools(task);  // build ONCE, not per-step
-    const toolDescriptions = describeTools(agentTools);  // compute ONCE
+    // agentTools + toolDescriptions already built above — no duplication
     let startTime = Date.now();
 
     // Cache episode context — doesn't change between steps
@@ -228,7 +231,7 @@ export async function runAgentTask(taskId: string): Promise<void> {
         taskId,
         step: i + 1,
         maxSteps: task.maxSteps,
-        thought: `Шаг ${i + 1}`,
+        thought: '',  // real thought comes in step_end after LLM generates it
         ts: Date.now(),
       });
 
@@ -341,15 +344,13 @@ export async function runAgentTask(taskId: string): Promise<void> {
 // ============================================================================
 // PLAN — generate structured plan
 // ============================================================================
-async function generatePlan(task: AgentTask): Promise<{
+async function generatePlan(task: AgentTask, toolDescriptions: string): Promise<{
   goal: string;
   steps: string[];
   needsTools: boolean;
   complexity: 'low' | 'medium' | 'high';
 }> {
   const model = await getChatModel();
-  const tools = buildAgentTools(task);
-  const toolDescriptions = describeTools(tools);
 
   const systemPrompt = `Ты — планировщик задач для агента Лии.
 Проанализируй задачу пользователя и составь пошаговый план выполнения.
@@ -407,7 +408,8 @@ function fallbackPlan(task: AgentTask) {
 
 // ============================================================================
 // Build messages for a step — plan + previous steps + new prompt.
-// Now takes pre-computed toolDescriptions + contextStr (cached, not recomputed).
+// Implements context window management: recent steps get full detail,
+// older steps get summarized to prevent context overflow.
 // ============================================================================
 function buildStepMessages(
   task: AgentTask,
@@ -417,10 +419,22 @@ function buildStepMessages(
   contextStr: string,
 ): ModelMessage[] {
   const planStr = plan.steps.map((s, i) => `${i + 1}. ${s}`).join('\n');
+
+  // Context window management: recent 5 steps get full detail (thought + observation),
+  // older steps get summarized (action + truncated observation only).
+  // This prevents context overflow on long tasks (15+ steps).
+  const RECENT_STEPS = 5;
   const stepsStr = previousSteps.length > 0
-    ? previousSteps.map((s, i) =>
-        `Шаг ${i + 1}: [${s.action}] ${s.thought}\nРезультат: ${s.observation.slice(0, 500)}`
-      ).join('\n\n')
+    ? previousSteps.map((s, i) => {
+        const stepNum = i + 1;
+        const isRecent = i >= previousSteps.length - RECENT_STEPS;
+        if (isRecent) {
+          // Full detail for recent steps
+          return `Шаг ${stepNum}: [${s.action}] ${s.thought}\nРезультат: ${s.observation.slice(0, 500)}`;
+        }
+        // Summarized for older steps
+        return `Шаг ${stepNum}: [${s.action}] ${s.observation.slice(0, 200)}`;
+      }).join('\n\n')
     : '(пока нет предыдущих шагов)';
 
   const systemPrompt = `Ты — агент Лия. Выполняешь задачу: "${task.goal}"
@@ -639,11 +653,15 @@ async function pauseTaskForInput(taskId: string, question: string): Promise<stri
     setWaiting(taskId, {
       question,
       resolve: (answer: string) => {
-        cleanup();  // CRITICAL: clear interval + timeout on resolve
-        updateAgentTask(taskId, { status: 'executing' }).then(() => resolve(answer));
+        cleanup();
+        // DB update might fail — resolve anyway so the agent loop continues.
+        // If status update fails, the runner will re-set it on next step.
+        updateAgentTask(taskId, { status: 'executing' })
+          .catch(() => null)
+          .then(() => resolve(answer));
       },
       reject: (err: Error) => {
-        cleanup();  // CRITICAL: clear interval + timeout on reject
+        cleanup();
         reject(err);
       },
     });

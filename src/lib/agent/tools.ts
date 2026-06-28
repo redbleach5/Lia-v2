@@ -890,6 +890,9 @@ export function describeTools(tools: ToolSet): string {
 //   - field._def.innerType — обёрнутый тип (для default/optional wrappers)
 //
 // Для default/optional нужно развернуть (unwrap) до базового типа.
+//
+// ВАЖНО: это приватное API Zod. При апгрейде Zod может сломаться.
+// try/catch обеспечивает fallback — описания не выводятся, но tools работают.
 // ============================================================================
 type ZodParam = { name: string; type: string; required: boolean; description?: string };
 

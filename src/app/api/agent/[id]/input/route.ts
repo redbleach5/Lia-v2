@@ -3,6 +3,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getAgentTask, updateAgentTask } from '@/lib/agent/task';
 import { resolveWaiting, isWaiting } from '@/lib/agent/events';
+import { logger } from '@/lib/logger';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -46,7 +47,7 @@ export async function POST(
 
     return NextResponse.json({ ok: true });
   } catch (e) {
-    console.error('[api/agent/[id]/input] failed:', e);
+    logger.error('agent', '/input] failed', {}, e);
     return NextResponse.json({ error: 'failed' }, { status: 500 });
   }
 }

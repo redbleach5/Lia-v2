@@ -17,6 +17,7 @@ import { db } from '@/lib/db';
 import { embed } from '@/lib/ollama';
 import { vecDb } from '@/lib/db-vec';
 import type { EmotionVector } from '@/lib/personality';
+import { logger } from '@/lib/logger';
 
 // ============================================================================
 // Types
@@ -119,7 +120,7 @@ export async function recordEmotionalAnchor(params: {
     try {
       embedding = await embed(context.slice(0, 500));
     } catch (e) {
-      console.warn('[emotional-memory] embed failed, storing without vector:', e);
+      logger.warn('memory', 'embed failed, storing without vector', {}, e);
     }
 
     // Store in Prisma
@@ -165,11 +166,11 @@ export async function recordEmotionalAnchor(params: {
           .run(rowid, vecId, episodeId);
       } catch (e) {
         // Non-fatal — emotional anchor is stored in Prisma, just not searchable via vec
-        console.warn('[emotional-memory] vec index insert failed (non-fatal):', e);
+        logger.warn('memory', 'vec index insert failed (non-fatal)', {}, e);
       }
     }
   } catch (e) {
-    console.warn('[emotional-memory] record failed (non-fatal):', e);
+    logger.warn('memory', 'record failed (non-fatal)', {}, e);
   }
 }
 
@@ -284,7 +285,7 @@ export async function recallEmotionalAnchors(params: {
 
     return { anchors: top, warning };
   } catch (e) {
-    console.warn('[emotional-memory] recall failed (non-fatal):', e);
+    logger.warn('memory', 'recall failed (non-fatal)', {}, e);
     return { anchors: [], warning: null };
   }
 }

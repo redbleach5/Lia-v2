@@ -2,6 +2,7 @@
 
 import { NextResponse } from 'next/server';
 import { detectProfile, TIER_DESCRIPTIONS, getTierParams } from '@/lib/capability-profile';
+import { logger } from '@/lib/logger';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -23,7 +24,7 @@ export async function POST() {
       params: getTierParams(profile.tier),
     });
   } catch (e) {
-    console.error('[api/capability/refresh] failed:', e);
+    logger.error('api', 'failed', {}, e);
     return NextResponse.json({ error: 'failed' }, { status: 500 });
   }
 }

@@ -5,6 +5,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { getEpisode, renameEpisode, deleteEpisode, getMessages } from '@/lib/memory/episodes';
+import { logger } from '@/lib/logger';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -22,7 +23,7 @@ export async function GET(
     const messages = await getMessages(id, 200);
     return NextResponse.json({ episode, messages });
   } catch (e) {
-    console.error('[api/episodes/[id]] GET failed:', e);
+    logger.error('api', '] GET failed', {}, e);
     return NextResponse.json({ error: 'failed' }, { status: 500 });
   }
 }
@@ -44,7 +45,7 @@ export async function PATCH(
     const episode = await getEpisode(id);
     return NextResponse.json({ episode });
   } catch (e) {
-    console.error('[api/episodes/[id]] PATCH failed:', e);
+    logger.error('api', '] PATCH failed', {}, e);
     return NextResponse.json({ error: 'failed' }, { status: 500 });
   }
 }
@@ -58,7 +59,7 @@ export async function DELETE(
     await deleteEpisode(id);
     return NextResponse.json({ ok: true });
   } catch (e) {
-    console.error('[api/episodes/[id]] DELETE failed:', e);
+    logger.error('api', '] DELETE failed', {}, e);
     return NextResponse.json({ error: 'failed' }, { status: 500 });
   }
 }

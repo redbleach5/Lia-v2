@@ -9,6 +9,7 @@
 import { db } from '@/lib/db';
 import { randomUUID } from 'crypto';
 import type { RLRewardSignals } from './types';
+import { logger } from '@/lib/logger';
 
 export type RLExperienceRecord = {
   id: string;
@@ -88,7 +89,7 @@ export async function completeExperience(id: string, params: {
     });
   } catch (e) {
     // Non-fatal — RL training can skip malformed records
-    console.warn('[rl:recorder] failed to complete experience:', e);
+    logger.warn('rl', 'failed to complete experience', {}, e);
   }
 }
 
@@ -128,7 +129,7 @@ export async function findLastIncompleteExperience(episodeId: string): Promise<R
       createdAt: record.createdAt,
     };
   } catch (e) {
-    console.warn('[rl:recorder] failed to find last incomplete experience:', e);
+    logger.warn('rl', 'failed to find last incomplete experience', {}, e);
     return null;
   }
 }

@@ -2,6 +2,11 @@ import type { Metadata } from "next";
 import { Plus_Jakarta_Sans, Inter, JetBrains_Mono } from "next/font/google";
 import "./globals.css";
 import { Toaster } from "@/components/ui/sonner";
+import { logServerStartup } from "@/lib/server-startup";
+
+// Запускаем startup-лог один раз при первом server-render.
+// layout.tsx — server component, поэтому код выполняется на сервере.
+void logServerStartup().catch(() => null);
 
 const jakarta = Plus_Jakarta_Sans({
   variable: "--font-sans",

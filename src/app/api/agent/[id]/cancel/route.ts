@@ -3,6 +3,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getAgentTask, updateAgentTask } from '@/lib/agent/task';
 import { cancelAgentTaskRun, isRunning } from '@/lib/agent/runner';
+import { logger } from '@/lib/logger';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -36,7 +37,7 @@ export async function POST(
     const updated = await getAgentTask(id);
     return NextResponse.json({ task: updated });
   } catch (e) {
-    console.error('[api/agent/[id]/cancel] failed:', e);
+    logger.error('agent', '/cancel] failed', {}, e);
     return NextResponse.json({ error: 'failed' }, { status: 500 });
   }
 }

@@ -16,6 +16,7 @@ import { getChatModel, checkOllamaHealth, getOllamaSettings } from '@/lib/ollama
 import { buildSystemPrompt } from '@/lib/system-prompt';
 import { tools } from '@/lib/tools';
 import { db } from '@/lib/db';
+import { logger } from '@/lib/logger';
 import { saveMessage, autoTitleEpisode, getMessages } from '@/lib/memory/episodes';
 import { getAllGlobalFacts, formatGlobalFactsForPrompt, getEpisodeFacts, formatEpisodeFactsForPrompt } from '@/lib/memory/facts';
 import { extractAndSaveFacts } from '@/lib/memory/fact-extraction';
@@ -72,8 +73,16 @@ export async function POST(req: NextRequest) {
   // ── 0. Pre-flight: Ollama availability check ──
   // Если Ollama недоступен — сразу возвращаем понятную ошибку, а не стримим 500.
   // Это исправляет "висящий" стрим, который ничего не отдаёт клиенту.
+  const requestStart = Date.now();
+  const log = logger.context({ episodeId: episodeId.slice(0, 8), mode: userMode });
+  log.info('chat', 'Chat request received', {
+    textLength: text.length,
+    textPreview: text.slice(0, 80),
+  });
+
   const preflightHealth = await checkOllamaHealth();
   if (!preflightHealth.ok) {
+    log.warn('ollama', 'Pre-flight failed — Ollama unavailable', { error: preflightHealth.error });
     return NextResponse.json({
       error: 'Ollama недоступен. Запусти `ollama serve` или проверь URL в настройках.',
       details: preflightHealth.error ?? 'unknown error',
@@ -81,6 +90,7 @@ export async function POST(req: NextRequest) {
     }, { status: 503 });
   }
   if (preflightHealth.models.length === 0) {
+    log.warn('ollama', 'Pre-flight failed — no models');
     return NextResponse.json({
       error: 'В Ollama нет моделей. Скачай хотя бы одну: `ollama pull qwen2.5:7b`.',
     }, { status: 503 });
@@ -100,6 +110,16 @@ export async function POST(req: NextRequest) {
     complexity,
     profile,
   });
+  log.info('chat', 'Execution plan', {
+    tier,
+    complexity,
+    planMode: plan.mode,
+    calls: plan.calls,
+    deliberate: plan.deliberate,
+    selfCheck: plan.selfCheck,
+    toolsEnabled: plan.toolsEnabled,
+    maxTokens: plan.maxTokens,
+  });
 
   // ── 4. Perceive emotion (rule-based) ──
   const recentMessages = await getMessages(episodeId, 10);
@@ -110,11 +130,15 @@ export async function POST(req: NextRequest) {
   const dtMin = Math.min(60, Math.max(0, (Date.now() - episode.updatedAt.getTime()) / 60000));
   currentEmotion = decayEmotion(currentEmotion, dtMin);
   const { emotion: perceivedEmotion, triggers } = perceive(text, currentEmotion);
+  log.debug('chat', 'Emotion perceived', {
+    dominant: dominantEmotion(perceivedEmotion),
+    triggers: triggers.length > 0 ? triggers.join(',') : 'none',
+  });
 
   // ── 4b. Assess disagreement (spectrum: execute → reluctant → counterOffer → principledRefusal → ethicalBlock) ──
   const disagreement = assessDisagreement(text);
   if (disagreement.level !== 'execute') {
-    console.log(`[chat] disagreement: ${disagreement.level} — ${disagreement.reason}`);
+    log.info('chat', 'Disagreement detected', { level: disagreement.level, reason: disagreement.reason });
   }
 
   // ── 4c. RL: complete previous experience + predict action for this turn ──
@@ -165,7 +189,7 @@ export async function POST(req: NextRequest) {
         reward,
         signals,
       });
-      console.log(`[chat] RL: completed prev experience ${prevExperience.id.slice(0, 8)}, reward=${reward.toFixed(3)}`);
+      log.info("rl", "Completed previous experience", { experienceId: prevExperience.id.slice(0, 8), reward: reward.toFixed(3) });
     }
 
     // 2. Строим состояние для текущего хода
@@ -190,13 +214,13 @@ export async function POST(req: NextRequest) {
     rlModelLoaded = prediction.version !== null;
 
     if (rlModelLoaded) {
-      console.log(`[chat] RL: predicted action=${rlActionLabel} (id=${rlActionId}, confidence=${rlConfidence.toFixed(2)}, v${rlModelVersion})`);
+      log.info("rl", "Predicted action", { action: rlActionLabel, actionId: rlActionId, confidence: rlConfidence.toFixed(2), version: rlModelVersion });
     } else {
       // Модель не загружена — используем fallback после получения ответа
-      console.log('[chat] RL: no ONNX model, will use fallback heuristic after response');
+      log.info('rl', 'No ONNX model — will use fallback heuristic');
     }
   } catch (e) {
-    console.warn('[chat] RL inference failed (non-fatal):', e);
+    log.warn('rl', 'Inference failed (non-fatal)', {}, e);
   }
 
   // ── 5. Save user message ──
@@ -277,7 +301,7 @@ export async function POST(req: NextRequest) {
     try {
       deliberateContext = await runDeliberate(text, perceivedEmotion, tier);
     } catch (e) {
-      console.warn('[chat] deliberate failed:', e);
+      log.warn('chat', 'Deliberate step failed', {}, e);
     }
   }
 
@@ -305,10 +329,17 @@ export async function POST(req: NextRequest) {
     onError: (error) => {
       // Логируем ошибку стрима. Текст уже отправлен пользователю — мы не можем
       // его отменить. Но лог поможет понять причину при разборе инцидентов.
-      console.error('[api/chat] streamText error:', error);
+      log.error('chat', 'streamText onError', {}, error);
     },
     onFinish: async ({ text: fullText, usage }) => {
       const durationMs = Date.now() - startTime;
+      log.info('chat', `Response finished (${durationMs}ms)`, {
+        responseLength: fullText.length,
+        responsePreview: fullText.slice(0, 120),
+        tokensIn: usage?.inputTokens,
+        tokensOut: usage?.outputTokens,
+        toolCallsCount: toolCallLog.length,
+      });
 
       try {
         await saveMessage(episodeId, {
@@ -321,7 +352,7 @@ export async function POST(req: NextRequest) {
           durationMs,
         });
       } catch (e) {
-        console.error('[api/chat] save companion message failed:', e);
+        log.error('chat', 'Failed to save companion message', {}, e);
       }
 
       // Vector memory
@@ -380,9 +411,9 @@ export async function POST(req: NextRequest) {
           // для off-policy corrections при обучении.
           policyVersion: rlModelLoaded ? rlModelVersion ?? undefined : undefined,
         });
-        console.log(`[chat] RL: recorded experience ${rlExperienceId.slice(0, 8)}, action=${ACTION_LABELS_RU[finalActionId] ?? finalActionId}, policyVersion=${rlModelLoaded ? rlModelVersion : 'null'}`);
+        log.info('rl', 'Recorded experience', { experienceId: rlExperienceId.slice(0, 8), action: ACTION_LABELS_RU[finalActionId] ?? finalActionId, policyVersion: rlModelLoaded ? rlModelVersion : null });
       } catch (e) {
-        console.warn('[api/chat] RL experience record failed (non-fatal):', e);
+        log.warn('rl', 'Experience record failed (non-fatal)', {}, e);
       }
 
       // Факт-экстракция — извлекаем user.* и current.* факты из диалога.
@@ -392,7 +423,7 @@ export async function POST(req: NextRequest) {
         userMessage: text,
         liaMessage: fullText,
         episodeId,
-      }).catch(e => console.warn('[api/chat] fact extraction failed (non-fatal):', e));
+      }).catch(e => log.warn('chat', 'Fact extraction failed (non-fatal)', {}, e));
 
       // Self-check — проверка качества ответа (если запланирована).
       // Работает в фоне. Если находит проблемы (severity != ok), корректирует
@@ -419,13 +450,13 @@ export async function POST(req: NextRequest) {
                   where: { id: rlExperienceId },
                   data: { reward: exp.reward + penalty },
                 });
-                console.log(`[chat] self-check: adjusted reward for ${rlExperienceId.slice(0, 8)} by ${penalty} (${checkResult.severity})`);
+                log.info('chat', 'Self-check adjusted reward', { experienceId: rlExperienceId.slice(0, 8), penalty, severity: checkResult.severity });
               }
             } catch (e) {
-              console.warn('[chat] self-check reward adjustment failed (non-fatal):', e);
+              log.warn('chat', 'Self-check reward adjustment failed (non-fatal)', {}, e);
             }
           }
-        }).catch(e => console.warn('[api/chat] self-check failed (non-fatal):', e));
+        }).catch(e => log.warn('chat', 'Self-check failed (non-fatal)', {}, e));
       }
     },
     onStepFinish: ({ toolCalls: tcs, toolResults: trs }) => {
@@ -506,7 +537,7 @@ async function runDeliberate(userMessage: string, emotion: EmotionVector, tier: 
     });
     return await result.text;
   } catch (e) {
-    console.warn('[chat] deliberate failed:', e);
+    logger.warn('chat', 'Deliberate step failed', {}, e);
     return '';
   }
 }
@@ -570,12 +601,12 @@ async function runSelfCheck(params: {
       : 'ok';
 
     if (severity !== 'ok') {
-      console.log(`[chat] self-check: ${severity} — ${issues.join('; ')}`);
+      logger.info('chat', 'Self-check found issues', { severity, issues: issues.join('; ') });
     }
 
     return { issues, severity };
   } catch (e) {
-    console.warn('[chat] self-check failed:', e);
+    logger.warn('chat', 'Self-check failed', {}, e);
     return { issues: [], severity: 'ok' };
   }
 }

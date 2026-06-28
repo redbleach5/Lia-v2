@@ -9,6 +9,7 @@ import { mkdir } from 'fs/promises';
 import { join } from 'path';
 import { PATHS } from '@/lib/paths';
 import { randomUUID } from 'crypto';
+import { logger } from '@/lib/logger';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -35,7 +36,7 @@ export async function GET(req: NextRequest) {
     }
     return NextResponse.json({ tasks });
   } catch (e) {
-    console.error('[api/agent] GET failed:', e);
+    logger.error('agent', 'GET failed', {}, e);
     return NextResponse.json({ error: 'failed' }, { status: 500 });
   }
 }
@@ -76,7 +77,7 @@ export async function POST(req: NextRequest) {
         await mkdir(taskWorkspace, { recursive: true });
         finalFsScope = taskWorkspace;
       } catch (e) {
-        console.warn('[api/agent] failed to create workspace:', e);
+        logger.warn('agent', 'failed to create workspace', {}, e);
         // Continue without workspace — agent can still use save_artifact, web_search, etc.
       }
     }
@@ -98,13 +99,13 @@ export async function POST(req: NextRequest) {
     // Auto-start the runner unless caller opted out
     if (autoStart) {
       runAgentTask(task.id).catch((e) => {
-        console.error(`[api/agent] runner crashed for task ${task.id}:`, e);
+        logger.error('agent', `Runner crashed for task`, { taskId: task.id.slice(0, 8) }, e);
       });
     }
 
     return NextResponse.json({ task }, { status: 201 });
   } catch (e) {
-    console.error('[api/agent] POST failed:', e);
+    logger.error('agent', 'POST failed', {}, e);
     return NextResponse.json({ error: 'failed' }, { status: 500 });
   }
 }

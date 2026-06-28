@@ -9,6 +9,7 @@
 
 import { db } from '@/lib/db';
 import { randomUUID } from 'crypto';
+import { logger } from '@/lib/logger';
 
 export type Episode = {
   id: string;
@@ -88,7 +89,7 @@ export async function deleteEpisode(id: string): Promise<void> {
   } catch (e) {
     // Non-fatal — Prisma cascade will still clean VectorMemory rows,
     // but vec_virtual/vec_rowid_map orphans may remain.
-    console.warn('[episodes] deleteVectorsInEpisode failed (non-fatal):', e);
+    logger.warn('memory', 'deleteVectorsInEpisode failed (non-fatal)', {}, e);
   }
 
   try {

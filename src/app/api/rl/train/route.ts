@@ -3,6 +3,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { trainSidecar } from '@/lib/rl/inference';
 import { db } from '@/lib/db';
+import { logger } from '@/lib/logger';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -49,16 +50,16 @@ export async function POST(req: NextRequest) {
             parentVersion: parentVersion ?? null,
           },
         });
-        console.log(`[api/rl/train] recorded model version ${result.result.version} in RlModelVersion`);
+        logger.info('rl', `Recorded model version ${result.result.version} in RlModelVersion`);
       } catch (e) {
         // Non-fatal — версия уже создана в sidecar, просто не записана в БД
-        console.warn('[api/rl/train] failed to record model version (non-fatal):', e);
+        logger.warn('rl', 'failed to record model version (non-fatal)', {}, e);
       }
     }
 
     return NextResponse.json({ result: result.result });
   } catch (e) {
-    console.error('[api/rl/train] failed:', e);
+    logger.error('rl', 'failed', {}, e);
     return NextResponse.json(
       { error: e instanceof Error ? e.message : String(e) },
       { status: 500 },

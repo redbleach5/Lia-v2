@@ -3,6 +3,7 @@
 
 import { NextResponse } from 'next/server';
 import { getPendingNotifications, clearNotification } from '@/lib/smart-notifications';
+import { logger } from '@/lib/logger';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -12,7 +13,7 @@ export async function GET() {
     const notifications = getPendingNotifications();
     return NextResponse.json({ notifications });
   } catch (e) {
-    console.error('[api/notifications] GET failed:', e);
+    logger.error('api', 'GET failed', {}, e);
     return NextResponse.json({ error: 'failed' }, { status: 500 });
   }
 }

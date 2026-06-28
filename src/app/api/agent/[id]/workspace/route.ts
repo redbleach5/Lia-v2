@@ -10,6 +10,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { readFile, readdir, stat } from 'fs/promises';
 import { join } from 'path';
 import { getAgentTask } from '@/lib/agent/task';
+import { logger } from '@/lib/logger';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -100,7 +101,7 @@ export async function GET(
       fsScope: task.fsScope,
     });
   } catch (e) {
-    console.error('[api/agent/[id]/workspace] failed:', e);
+    logger.error('agent', '/workspace] failed', {}, e);
     return NextResponse.json({ error: 'failed' }, { status: 500 });
   }
 }

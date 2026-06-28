@@ -11,6 +11,7 @@ import { spawn, execFileSync, type ChildProcess } from 'child_process';
 import { PATHS } from '@/lib/paths';
 import { existsSync } from 'fs';
 import path from 'path';
+import { logger } from '@/lib/logger';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -81,18 +82,18 @@ function start(): { ok: boolean; pid?: number; error?: string } {
 
     proc.stdout?.on('data', (data: Buffer) => {
       const msg = data.toString().trim();
-      if (msg) console.log('[rl-engine]', msg);
+      if (msg) logger.info('rl', `sidecar stdout: ${msg}`);
     });
     proc.stderr?.on('data', (data: Buffer) => {
       const msg = data.toString().trim();
-      if (msg) console.warn('[rl-engine]', msg);
+      if (msg) logger.warn('rl', `sidecar stderr: ${msg}`);
     });
     proc.on('exit', (code) => {
-      console.log(`[rl-engine] exited with code ${code}`);
+      logger.info('rl', `sidecar exited with code ${code}`);
       g[globalKey] = undefined;
     });
     proc.on('error', (err) => {
-      console.error('[rl-engine] failed to start:', err);
+      logger.error('rl', 'sidecar failed to start', {}, err);
       g[globalKey] = undefined;
     });
 
@@ -134,7 +135,7 @@ export async function POST() {
       message: 'Движок обучения запущен',
     });
   } catch (e) {
-    console.error('[api/rl/start-engine] failed:', e);
+    logger.error('rl', 'failed', {}, e);
     return NextResponse.json(
       { error: e instanceof Error ? e.message : String(e) },
       { status: 500 },

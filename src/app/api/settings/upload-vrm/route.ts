@@ -8,6 +8,7 @@ import { writeFile, mkdir } from 'fs/promises';
 import path from 'path';
 import { PATHS, sanitizeFilename } from '@/lib/paths';
 import { db } from '@/lib/db';
+import { logger } from '@/lib/logger';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -64,7 +65,7 @@ export async function POST(req: NextRequest) {
       sizeMb: (file.size / 1024 / 1024).toFixed(1),
     });
   } catch (e) {
-    console.error('[api/settings/upload-vrm] failed:', e);
+    logger.error('api', 'failed', {}, e);
     return NextResponse.json(
       { error: e instanceof Error ? e.message : String(e) },
       { status: 500 },

@@ -23,6 +23,7 @@ import { db } from '@/lib/db';
 import { checkOllamaHealth } from '@/lib/ollama';
 import { execSync } from 'child_process';
 import { existsSync } from 'fs';
+import { logger } from '@/lib/logger';
 
 // ============================================================================
 // Types
@@ -88,7 +89,7 @@ async function setCachedProfile(profile: CapabilityProfile): Promise<void> {
       update: { value: JSON.stringify(profile) },
     });
   } catch (e) {
-    console.warn('[capability] failed to cache profile:', e);
+    logger.warn('system', 'Failed to cache capability profile', {}, e);
   }
 }
 

@@ -13,6 +13,7 @@ import { existsSync, readFileSync, readdirSync } from 'fs';
 import path from 'path';
 import { PATHS } from '@/lib/paths';
 import { RL_ACTIONS, STATE_DIM, type RLActionId } from './types';
+import { logger } from '@/lib/logger';
 
 // ============================================================================
 // Sidecar config
@@ -60,7 +61,7 @@ async function ensureSession(version: number | null = null): Promise<boolean> {
 
   const resolved = resolveOnnxPath(version);
   if (!resolved) {
-    console.warn('[rl:inference] No ONNX model found in', SIDECAR_MODELS_DIR);
+    logger.warn('rl', 'No ONNX model found in', {}, SIDECAR_MODELS_DIR);
     return false;
   }
 
@@ -69,10 +70,10 @@ async function ensureSession(version: number | null = null): Promise<boolean> {
     const modelBuffer = readFileSync(resolved.path);
     session = await ort.InferenceSession.create(modelBuffer);
     loadedVersion = resolved.version;
-    console.log(`[rl:inference] loaded policy v${resolved.version}`);
+    logger.info('rl', `Loaded policy v${resolved.version}`);
     return true;
   } catch (e) {
-    console.error('[rl:inference] Failed to load ONNX model:', e);
+    logger.error('rl', 'Failed to load ONNX model', {}, e);
     return false;
   }
 }
@@ -95,7 +96,7 @@ export type RLPrediction = {
  */
 export async function predictAction(state: number[], version: number | null = null): Promise<RLPrediction> {
   if (state.length !== STATE_DIM) {
-    console.warn(`[rl:inference] state dim mismatch: expected ${STATE_DIM}, got ${state.length}`);
+    logger.warn('rl', `State dim mismatch`, { expected: STATE_DIM, got: state.length });
     return { action: 0, actionName: RL_ACTIONS[0], confidence: 0, value: 0, version: null };
   }
 
@@ -139,7 +140,7 @@ export async function predictAction(state: number[], version: number | null = nu
       version: loadedVersion,
     };
   } catch (e) {
-    console.error('[rl:inference] prediction failed:', e);
+    logger.error('rl', 'prediction failed', {}, e);
     return { action: 0, actionName: RL_ACTIONS[0], confidence: 0, value: 0, version: loadedVersion };
   }
 }

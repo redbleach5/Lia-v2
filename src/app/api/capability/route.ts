@@ -3,6 +3,7 @@
 
 import { NextResponse } from 'next/server';
 import { getCapabilityProfile, detectProfile, TIER_DESCRIPTIONS, getTierParams } from '@/lib/capability-profile';
+import { logger } from '@/lib/logger';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -26,7 +27,7 @@ export async function GET() {
       params: getTierParams(profile.tier),
     });
   } catch (e) {
-    console.error('[api/capability] GET failed:', e);
+    logger.error('api', 'GET failed', {}, e);
     return NextResponse.json({ error: 'failed' }, { status: 500 });
   }
 }

@@ -16,6 +16,7 @@ import path from 'path';
 import { mkdirSync } from 'fs';
 import { randomUUID } from 'crypto';
 import { resolveSqliteVecPath, resolveDbPath } from '@/lib/paths';
+import { logger } from '@/lib/logger';
 
 // ============================================================================
 // DB path — cross-platform resolution via paths.ts
@@ -39,9 +40,9 @@ if (globalForVec.__vecDb) {
   try {
     const vecPath = resolveSqliteVecPath();
     db.loadExtension(vecPath);
-    console.log('[db-vec] sqlite-vec loaded from', vecPath);
+    logger.info('db', `sqlite-vec loaded`, { path: vecPath });
   } catch (e) {
-    console.error('[db-vec] Failed to load sqlite-vec:', e);
+    logger.error('db', 'Failed to load sqlite-vec extension', {}, e);
     throw e;
   }
 
@@ -68,9 +69,9 @@ if (globalForVec.__vecDb) {
     `);
     db.exec(`CREATE INDEX IF NOT EXISTS idx_vec_rowid_map_episode ON vec_rowid_map(episode_id)`);
 
-    console.log('[db-vec] vec_virtual + vec_rowid_map tables ready');
+    logger.info('db', 'vec_virtual + vec_rowid_map tables ready');
   } catch (e) {
-    console.error('[db-vec] Failed to create vec tables:', e);
+    logger.error('db', 'Failed to create vec tables', {}, e);
     throw e;
   }
 
@@ -233,7 +234,11 @@ export function searchVectorsInEpisode(params: {
       })
       .filter((x): x is { id: string; sourceType: string; text: string; similarity: number } => x !== null);
   } catch (e) {
-    console.warn('[db-vec] search failed:', e);
+    logger.warn('db', `Vector search failed`, {
+      episodeId: episodeId.slice(0, 8),
+      limit,
+      minSimilarity,
+    }, e);
     return [];
   }
 }

@@ -15,6 +15,7 @@
 import { streamText } from 'ai';
 import { getChatModel } from '@/lib/ollama';
 import { upsertGlobalFact, upsertEpisodeFact } from './facts';
+import { logger } from '@/lib/logger';
 
 // ============================================================================
 // Эвристика — стоит ли извлекать факты из этого сообщения
@@ -140,12 +141,12 @@ export async function extractAndSaveFacts(params: {
     }
 
     if (globalCount + episodeCount > 0) {
-      console.log(`[facts] extracted: ${globalCount} global, ${episodeCount} episode`);
+      logger.info('memory', `Facts extracted`, { globalCount, episodeCount });
     }
 
     return { globalCount, episodeCount };
   } catch (e) {
-    console.warn('[facts] extraction failed (non-fatal):', e);
+    logger.warn('memory', 'extraction failed (non-fatal)', {}, e);
     return { globalCount: 0, episodeCount: 0 };
   }
 }

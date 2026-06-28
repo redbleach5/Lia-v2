@@ -10,6 +10,7 @@
 
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible';
 import { db } from './db';
+import { logger } from './logger';
 
 // ============================================================================
 // Settings persistence — load Ollama URL/model from DB on first call.
@@ -32,14 +33,32 @@ async function loadSettings(): Promise<void> {
   settingsLoadPromise = (async () => {
     try {
       const rows = await db.setting.findMany();
+      let changed = false;
       for (const row of rows) {
-        if (row.key === 'ollama_base_url') currentBaseUrl = row.value;
-        else if (row.key === 'ollama_model') currentModel = row.value;
-        else if (row.key === 'ollama_embed_model') currentEmbedModel = row.value;
+        if (row.key === 'ollama_base_url' && currentBaseUrl !== row.value) {
+          currentBaseUrl = row.value;
+          changed = true;
+        } else if (row.key === 'ollama_model' && currentModel !== row.value) {
+          currentModel = row.value;
+          changed = true;
+        } else if (row.key === 'ollama_embed_model' && currentEmbedModel !== row.value) {
+          currentEmbedModel = row.value;
+          changed = true;
+        }
       }
       settingsLoaded = true;
+      if (changed) {
+        logger.debug('ollama', 'Settings loaded from DB', {
+          baseUrl: currentBaseUrl,
+          model: currentModel,
+          embedModel: currentEmbedModel || 'auto',
+        });
+      }
     } catch (e) {
-      console.warn('[ollama] failed to load settings, using env defaults:', e);
+      logger.warn('ollama', 'Failed to load settings — using env defaults', {
+        baseUrl: currentBaseUrl,
+        model: currentModel,
+      }, e);
       settingsLoaded = true; // don't retry forever
     } finally {
       settingsLoadPromise = null;
@@ -150,6 +169,7 @@ export async function getChatModel() {
   if (health.ok && health.models.length > 0) {
     const exactMatch = health.models.find(m => m === currentModel);
     if (exactMatch) {
+      logger.debug('ollama', `Using configured model: ${currentModel}`);
       return p.chatModel(currentModel);
     }
 
@@ -161,17 +181,25 @@ export async function getChatModel() {
     );
 
     if (partialMatch) {
-      console.warn(`[ollama] model "${currentModel}" not found, using "${partialMatch}" instead. Set OLLAMA_MODEL in .env to silence this warning.`);
+      logger.warn('ollama', `Model not found, using partial match`, {
+        requested: currentModel,
+        using: partialMatch,
+      });
       return p.chatModel(partialMatch);
     }
 
     // Fall back to first available
     const fallback = health.models[0];
-    console.warn(`[ollama] model "${currentModel}" not found, falling back to first available: "${fallback}". Set OLLAMA_MODEL in .env to silence this warning.`);
+    logger.warn('ollama', `Model not found, using first available`, {
+      requested: currentModel,
+      using: fallback,
+      allModels: health.models.slice(0, 5),
+    });
     return p.chatModel(fallback);
   }
 
   // Health check failed — try the configured model anyway (will likely 404)
+  logger.warn('ollama', `Health check failed — using configured model anyway (will likely 404)`, { model: currentModel });
   return p.chatModel(currentModel);
 }
 
@@ -209,6 +237,7 @@ function pickEmbedModelFromList(available: string[]): string | null {
 
 export async function embed(text: string): Promise<Float32Array> {
   await loadSettings();
+  const embedStart = Date.now();
 
   // Auto-detect embed model if the current one isn't in the available list
   // OR if it's empty (user selected "auto" in UI)
@@ -222,6 +251,7 @@ export async function embed(text: string): Promise<Float32Array> {
         modelToUse = detected;
         // Persist the auto-detected choice so we don't re-detect every call
         if (detected !== currentEmbedModel) {
+          logger.info('ollama', `Auto-detected embed model: ${detected}`);
           currentEmbedModel = detected;
           // Save to DB so we don't re-detect every call
           try {
@@ -234,6 +264,9 @@ export async function embed(text: string): Promise<Float32Array> {
         }
       } else if (!currentEmbedModel) {
         // No embed model configured AND none detected — throw clear error
+        logger.error('ollama', 'No embed model available — throwing clear error', {
+          availableModels: health.models.slice(0, 5),
+        });
         throw new Error(
           'Не настроена модель для памяти. Скачай nomic-embed-text: ollama pull nomic-embed-text, ' +
           'или выбери модель в Настройках → Модель → Модель для памяти.'
@@ -248,20 +281,40 @@ export async function embed(text: string): Promise<Float32Array> {
     );
   }
 
-  const res = await fetch(`${currentBaseUrl}/api/embed`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ model: modelToUse, input: text }),
-    signal: AbortSignal.timeout(30_000),
-  });
-  if (!res.ok) {
-    const t = await res.text().catch(() => '');
-    throw new Error(`Ollama embed HTTP ${res.status}: ${t}`);
+  try {
+    const res = await fetch(`${currentBaseUrl}/api/embed`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: modelToUse, input: text }),
+      signal: AbortSignal.timeout(30_000),
+    });
+    if (!res.ok) {
+      const t = await res.text().catch(() => '');
+      logger.error('ollama', `Embed HTTP error`, {
+        status: res.status,
+        model: modelToUse,
+        textLength: text.length,
+        responsePreview: t.slice(0, 200),
+      });
+      throw new Error(`Ollama embed HTTP ${res.status}: ${t}`);
+    }
+    const data = await res.json();
+    const vec = data?.embeddings?.[0] ?? data?.embedding;
+    if (!Array.isArray(vec)) {
+      logger.error('ollama', 'Embed returned no vector', { model: modelToUse, responseKeys: Object.keys(data ?? {}) });
+      throw new Error('Ollama embed returned no vector');
+    }
+    logger.debug('ollama', `Embed done (${Date.now() - embedStart}ms)`, {
+      model: modelToUse,
+      dims: vec.length,
+      textLength: text.length,
+    });
+    return new Float32Array(vec);
+  } catch (e) {
+    if (e instanceof Error && e.message.startsWith('Ollama embed HTTP')) throw e;
+    logger.error('ollama', 'Embed fetch failed', { model: modelToUse }, e);
+    throw e;
   }
-  const data = await res.json();
-  const vec = data?.embeddings?.[0] ?? data?.embedding;
-  if (!Array.isArray(vec)) throw new Error('Ollama embed returned no vector');
-  return new Float32Array(vec);
 }
 
 // ============================================================================

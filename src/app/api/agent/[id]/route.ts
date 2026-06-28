@@ -2,6 +2,7 @@
 
 import { NextRequest, NextResponse } from 'next/server';
 import { getAgentTask, parseSteps, parseArtifacts } from '@/lib/agent/task';
+import { logger } from '@/lib/logger';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -23,7 +24,7 @@ export async function GET(
       plan: task.planJson ? JSON.parse(task.planJson) : null,
     });
   } catch (e) {
-    console.error('[api/agent/[id]] GET failed:', e);
+    logger.error('agent', '] GET failed', {}, e);
     return NextResponse.json({ error: 'failed' }, { status: 500 });
   }
 }

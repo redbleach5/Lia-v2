@@ -4,6 +4,7 @@
 import { NextResponse } from 'next/server';
 import { getSidecarStats } from '@/lib/rl/inference';
 import { countExperiences } from '@/lib/rl/recorder';
+import { logger } from '@/lib/logger';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -22,7 +23,7 @@ export async function GET() {
       local_experiences: localCount,
     });
   } catch (e) {
-    console.error('[api/rl/stats] failed:', e);
+    logger.error('rl', 'failed', {}, e);
     return NextResponse.json(
       { error: e instanceof Error ? e.message : String(e) },
       { status: 500 },

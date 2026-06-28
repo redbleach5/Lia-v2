@@ -4,6 +4,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { readFile } from 'fs/promises';
 import path from 'path';
 import { PATHS } from '@/lib/paths';
+import { logger } from '@/lib/logger';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -68,7 +69,7 @@ export async function GET(
     if (err.code === 'ENOENT') {
       return NextResponse.json({ error: 'artifact not found' }, { status: 404 });
     }
-    console.error('[api/artifacts] read failed:', e);
+    logger.error('api', 'read failed', {}, e);
     return NextResponse.json({ error: 'failed' }, { status: 500 });
   }
 }

@@ -17,6 +17,7 @@ import { streamText, isStepCount, type ModelMessage, type ToolSet } from 'ai';
 import { getChatModel, checkOllamaHealth } from '@/lib/ollama';
 import { db } from '@/lib/db';
 import { z } from 'zod';
+import { logger } from '@/lib/logger';
 import {
   getAgentTask,
   updateAgentTask,
@@ -94,10 +95,13 @@ export async function sweepStaleTasks(): Promise<number> {
       },
     });
 
-    console.log(`[agent:runner] swept ${staleTasks.length} stale task(s) marked as failed`);
+    logger.warn('agent', `Swept ${staleTasks.length} stale task(s) marked as failed`, {
+      taskIds: staleTasks.map(t => t.id.slice(0, 8)),
+      statuses: staleTasks.map(t => t.status),
+    });
     return staleTasks.length;
   } catch (e) {
-    console.warn('[agent:runner] sweepStaleTasks failed (non-fatal):', e);
+    logger.warn('agent', 'sweepStaleTasks failed (non-fatal)', {}, e);
     return 0;
   }
 }
@@ -105,70 +109,98 @@ export async function sweepStaleTasks(): Promise<number> {
 // ============================================================================
 // Main entry point
 // ============================================================================
+// Жёсткий верхний таймаут на всю задачу — даже если maxDurationSec больше,
+// мы принудительно снимаем задачу через MAX_TASK_WALL_TIME_MS. Это страховка
+// от scenarios когда promise висит навсегда (например, onCancel не сработал).
+const MAX_TASK_WALL_TIME_MS = 30 * 60 * 1000; // 30 минут абсолютный максимум
+
 export async function runAgentTask(taskId: string): Promise<void> {
+  const log = logger.context({ taskId: taskId.slice(0, 8) });
+
   if (activeRunners.has(taskId)) {
-    console.warn(`[agent:runner] task ${taskId} already running, skipping`);
+    log.warn('agent', 'Task already running, skipping');
     return;
   }
 
   const task = await getAgentTask(taskId);
   if (!task) {
-    console.error(`[agent:runner] task ${taskId} not found`);
+    log.error('agent', 'Task not found');
     return;
   }
   if (task.status === 'done' || task.status === 'cancelled') {
-    console.warn(`[agent:runner] task ${taskId} already ${task.status}`);
+    log.warn('agent', `Task already ${task.status}`, { status: task.status });
     return;
   }
+
+  log.info('agent', 'Task started', {
+    goal: task.goal.slice(0, 100),
+    status: task.status,
+    maxSteps: task.maxSteps,
+    maxDurationSec: task.maxDurationSec,
+    fsScope: task.fsScope ? 'set' : 'none',
+  });
 
   activeRunners.add(taskId);
   clearCancellation(taskId);
 
+  // ── Страховочный watchdog — снимает задачу если она идёт дольше MAX_TASK_WALL_TIME_MS ──
+  // Это решает проблему "зависших" задач, когда ни один из внутренних таймаутов
+  // не сработал (race condition, неучтённый await, и т.п.).
+  const watchdogTimer = setTimeout(() => {
+    if (activeRunners.has(taskId)) {
+      log.error('agent', `WATCHDOG: Task exceeded ${MAX_TASK_WALL_TIME_MS / 60000}min wall time, force-failing`, {
+        wallTimeMs: MAX_TASK_WALL_TIME_MS,
+      });
+      signalCancellation(taskId);
+      cancelWaiting(taskId);
+      // Принудительно помечаем в БД
+      updateAgentTask(taskId, {
+        status: 'failed',
+        completedAt: new Date(),
+        error: `Задача превысила максимальное время выполнения (${MAX_TASK_WALL_TIME_MS / 60000} мин). Возможно, LLM завис или инструмент не ответил.`,
+      }).catch(() => null);
+    }
+  }, MAX_TASK_WALL_TIME_MS);
+  watchdogTimer.unref?.();
+
   try {
     // ── 0. Pre-flight: Ollama availability check ──
-    // Если Ollama недоступен — задача сразу переходит в failed с понятной ошибкой,
-    // а не пытается 3 раза ретраить каждый LLM-вызов и повесить цикл.
+    log.debug('ollama', 'Pre-flight Ollama check');
+    const preflightStart = Date.now();
     const preflight = await checkOllamaHealth();
+    log.debug('ollama', `Pre-flight done (${Date.now() - preflightStart}ms)`, {
+      ok: preflight.ok,
+      modelsCount: preflight.models.length,
+    });
+
     if (!preflight.ok) {
+      const errMsg = `Ollama недоступен: ${preflight.error ?? 'unknown'}. Запусти \`ollama serve\` и проверь URL в настройках.`;
+      log.error('ollama', 'Pre-flight failed — Ollama unavailable', {
+        error: preflight.error,
+      }, new Error(errMsg));
       await updateAgentTask(taskId, {
         status: 'failed',
         completedAt: new Date(),
-        error: `Ollama недоступен: ${preflight.error ?? 'unknown'}. Запусти \`ollama serve\` и проверь URL в настройках.`,
+        error: errMsg,
       });
-      emitAgentEvent({
-        type: 'task_failed',
-        taskId,
-        error: `Ollama недоступен: ${preflight.error ?? 'unknown'}`,
-        ts: Date.now(),
-      });
-      bufferEvent({
-        type: 'task_failed',
-        taskId,
-        error: `Ollama недоступен: ${preflight.error ?? 'unknown'}`,
-        ts: Date.now(),
-      });
+      emitAgentEvent({ type: 'task_failed', taskId, error: errMsg, ts: Date.now() });
+      bufferEvent({ type: 'task_failed', taskId, error: errMsg, ts: Date.now() });
       return;
     }
     if (preflight.models.length === 0) {
+      const errMsg = 'В Ollama нет моделей. Скачай хотя бы одну: `ollama pull qwen2.5:7b`.';
+      log.error('ollama', 'Pre-flight failed — no models available');
       await updateAgentTask(taskId, {
         status: 'failed',
         completedAt: new Date(),
-        error: 'В Ollama нет моделей. Скачай хотя бы одну: `ollama pull qwen2.5:7b`.',
+        error: errMsg,
       });
-      emitAgentEvent({
-        type: 'task_failed',
-        taskId,
-        error: 'В Ollama нет моделей',
-        ts: Date.now(),
-      });
-      bufferEvent({
-        type: 'task_failed',
-        taskId,
-        error: 'В Ollama нет моделей',
-        ts: Date.now(),
-      });
+      emitAgentEvent({ type: 'task_failed', taskId, error: errMsg, ts: Date.now() });
+      bufferEvent({ type: 'task_failed', taskId, error: errMsg, ts: Date.now() });
       return;
     }
+
+    log.info('ollama', 'Pre-flight OK', { models: preflight.models.length });
 
     await updateAgentTask(taskId, {
       status: 'planning',
@@ -178,14 +210,26 @@ export async function runAgentTask(taskId: string): Promise<void> {
     bufferEvent({ type: 'task_started', taskId, goal: task.goal, ts: Date.now() });
 
     // ── 1. PLAN ──
+    log.info('agent', 'PLAN phase started');
     emitAgentEvent({ type: 'task_planning', taskId, ts: Date.now() });
     bufferEvent({ type: 'task_planning', taskId, ts: Date.now() });
 
     // Build tools ONCE — used for both planning and execution.
     const agentTools = buildAgentTools(task);
     const toolDescriptions = describeTools(agentTools);
+    log.debug('agent', `Tools built (${Object.keys(agentTools).length} tools)`, {
+      tools: Object.keys(agentTools),
+    });
 
+    const planStart = Date.now();
     const plan = await generatePlan(task, toolDescriptions);
+    log.info('agent', `Plan generated (${Date.now() - planStart}ms)`, {
+      stepsCount: plan.steps.length,
+      complexity: plan.complexity,
+      needsTools: plan.needsTools,
+      steps: plan.steps.map(s => s.slice(0, 80)),
+    });
+
     await updateAgentTask(taskId, { planJson: JSON.stringify(plan) });
 
     emitAgentEvent({
@@ -202,6 +246,7 @@ export async function runAgentTask(taskId: string): Promise<void> {
     });
 
     // ── 2. EXECUTE LOOP ──
+    log.info('agent', 'EXECUTE phase started');
     await updateAgentTask(taskId, { status: 'executing' });
 
     // Load existing steps (for resume case). Start iteration from where we left off.
@@ -211,10 +256,18 @@ export async function runAgentTask(taskId: string): Promise<void> {
     let startTime = Date.now();
 
     // Cache episode context — doesn't change between steps
+    const contextLoadStart = Date.now();
     const [episodeFacts, vectorHits] = await Promise.all([
       getEpisodeFacts(task.episodeId),
-      recall({ episodeId: task.episodeId, query: task.goal, limit: 2, minSimilarity: 0.4 }).catch(() => []),
+      recall({ episodeId: task.episodeId, query: task.goal, limit: 2, minSimilarity: 0.4 }).catch((e) => {
+        log.warn('memory', 'recall failed during agent context load', {}, e);
+        return [];
+      }),
     ]);
+    log.debug('memory', `Context loaded (${Date.now() - contextLoadStart}ms)`, {
+      factsCount: episodeFacts.length,
+      vectorHits: vectorHits.length,
+    });
     const contextStr = [
       episodeFacts.length > 0 ? 'Контекст чата:\n' + episodeFacts.map(f => `${f.key}: ${f.value}`).join('\n') : '',
       vectorHits.length > 0 ? 'Релевантные воспоминания:\n' + vectorHits.map(h => h.text.slice(0, 300)).join('\n---\n') : '',
@@ -223,6 +276,7 @@ export async function runAgentTask(taskId: string): Promise<void> {
     for (let i = startStep; i < task.maxSteps; i++) {
       // Cancellation check — between steps
       if (isCancelled(taskId)) {
+        log.warn('agent', `Cancellation detected before step ${i + 1}`);
         emitAgentEvent({ type: 'task_cancelled', taskId, ts: Date.now() });
         bufferEvent({ type: 'task_cancelled', taskId, ts: Date.now() });
         await updateAgentTask(taskId, {
@@ -237,11 +291,17 @@ export async function runAgentTask(taskId: string): Promise<void> {
       // Budget check
       const elapsedSec = (Date.now() - startTime) / 1000;
       if (elapsedSec > task.maxDurationSec) {
+        log.warn('agent', `Budget exceeded — asking user to extend`, {
+          elapsedSec: Math.floor(elapsedSec),
+          maxDurationSec: task.maxDurationSec,
+        });
         const extensionSec = Math.max(60, Math.floor(task.maxDurationSec / 2));
         const userAnswer = await pauseTaskForInput(
           taskId,
           `Превышен лимит времени (${Math.floor(elapsedSec)} сек из ${task.maxDurationSec}). Продолжить ещё на ${extensionSec} сек или остановиться? Ответь "продолжить" или "стоп".`,
         );
+
+        log.info('agent', `Budget extension answer`, { answer: userAnswer.slice(0, 50) });
 
         const answerLower = userAnswer.toLowerCase().trim();
         const stopWords = ['стоп', 'stop', 'нет', 'no', 'отмена', 'cancel', 'остановись', 'хватит'];
@@ -263,6 +323,11 @@ export async function runAgentTask(taskId: string): Promise<void> {
             : loopSignal.kind === 'empty'
               ? `${loopSignal.count} последних шагов дали пустой результат`
               : `Мысли стали слишком похожи (similarity=${loopSignal.similarity.toFixed(2)})`;
+          log.warn('agent', `Loop detected — asking user`, {
+            kind: loopSignal.kind,
+            count: 'count' in loopSignal ? loopSignal.count : undefined,
+            tool: 'tool' in loopSignal ? loopSignal.tool : undefined,
+          });
           await pauseTaskForInput(taskId, `Похоже, я застряла в цикле: ${reason}. Подскажи, как поступить?`);
           if (isCancelled(taskId)) continue;
         }
@@ -271,6 +336,7 @@ export async function runAgentTask(taskId: string): Promise<void> {
       // ── Build messages for this step ──
       const stepMessages = buildStepMessages(task, plan, steps, toolDescriptions, contextStr);
 
+      log.info('agent', `Step ${i + 1}/${task.maxSteps} started`);
       emitAgentEvent({
         type: 'step_start',
         taskId,
@@ -283,6 +349,22 @@ export async function runAgentTask(taskId: string): Promise<void> {
       const stepStartTime = Date.now();
       const stepResult = await executeStep(task, stepMessages, agentTools, taskId, i + 1);
       const stepDuration = Date.now() - stepStartTime;
+
+      log.info('agent', `Step ${i + 1} completed`, {
+        action: stepResult.action,
+        durationMs: stepDuration,
+        observationLength: stepResult.observation.length,
+        finished: stepResult.finished,
+      });
+      if (stepResult.action !== 'reason') {
+        log.debug('agent', `Step ${i + 1} tool call`, {
+          action: stepResult.action,
+          inputPreview: typeof stepResult.input === 'object'
+            ? JSON.stringify(stepResult.input).slice(0, 200)
+            : String(stepResult.input).slice(0, 200),
+          observationPreview: stepResult.observation.slice(0, 150),
+        });
+      }
 
       // Record step
       steps.push({
@@ -323,11 +405,13 @@ export async function runAgentTask(taskId: string): Promise<void> {
       // Check if model decided to finish — ONLY on explicit "ГОТОВО:" signal.
       // Previously: any text without tool call ended the task prematurely.
       if (stepResult.finished) {
+        log.info('agent', `Step ${i + 1} — model emitted "ГОТОВО" signal, breaking loop`);
         break;
       }
     }
 
     // ── 3. SYNTHESIZE ──
+    log.info('agent', `SYNTHESIZE phase started (after ${steps.length} steps)`);
     await updateAgentTask(taskId, { status: 'synthesizing' });
     emitAgentEvent({ type: 'task_synthesizing', taskId, ts: Date.now() });
     bufferEvent({ type: 'task_synthesizing', taskId, ts: Date.now() });
@@ -339,11 +423,17 @@ export async function runAgentTask(taskId: string): Promise<void> {
         .filter(m => m.role === 'user' || m.role === 'companion')
         .slice(-6)
         .map(m => ({ role: m.role, content: m.content.slice(0, 300) }));
+      log.debug('agent', `Dialogue history loaded (${dialogueHistory.length} messages)`);
     } catch (e) {
-      console.warn('[agent:runner] failed to load dialogue history for synthesize:', e);
+      log.warn('agent', 'Failed to load dialogue history for synthesize', {}, e);
     }
 
+    const synthStart = Date.now();
     const resultSummary = await synthesize(task, plan, steps, dialogueHistory);
+    log.info('agent', `Synthesis done (${Date.now() - synthStart}ms)`, {
+      resultLength: resultSummary.length,
+      resultPreview: resultSummary.slice(0, 200),
+    });
 
     await updateAgentTask(taskId, {
       status: 'done',
@@ -352,13 +442,22 @@ export async function runAgentTask(taskId: string): Promise<void> {
       stepsJson: JSON.stringify(steps),
     });
 
+    log.info('agent', 'Task DONE', {
+      totalSteps: steps.length,
+      totalMs: Date.now() - startTime,
+    });
+
     emitAgentEvent({ type: 'task_done', taskId, resultSummary, ts: Date.now() });
     bufferEvent({ type: 'task_done', taskId, resultSummary, ts: Date.now() });
   } catch (e) {
     const errorMsg = e instanceof Error ? e.message : String(e);
-    console.error(`[agent:runner] task ${taskId} failed:`, e);
+    log.error('agent', 'Task FAILED', {
+      error: errorMsg,
+      phase: activeRunners.has(taskId) ? 'in-progress' : 'unknown',
+    }, e);
 
     if (errorMsg === 'cancelled' || isCancelled(taskId)) {
+      log.info('agent', 'Task was cancelled');
       await updateAgentTask(taskId, {
         status: 'cancelled',
         completedAt: new Date(),
@@ -376,6 +475,9 @@ export async function runAgentTask(taskId: string): Promise<void> {
       bufferEvent({ type: 'task_failed', taskId, error: errorMsg, ts: Date.now() });
     }
   } finally {
+    // Чистим watchdog — задача завершилась нормально, страховка не нужна.
+    clearTimeout(watchdogTimer);
+
     activeRunners.delete(taskId);
     clearCancellation(taskId);
     cancelWaiting(taskId);
@@ -416,6 +518,7 @@ ${task.fsScope ? `Рабочая директория: ${task.fsScope}` : 'Ра�
 Верни СТРОГО JSON.`;
 
   try {
+    logger.debug('agent', 'Plan generation: calling LLM', { maxTokens: PLANNING_MAX_TOKENS });
     const result = await streamText({
       model,
       system: systemPrompt,
@@ -423,7 +526,7 @@ ${task.fsScope ? `Рабочая директория: ${task.fsScope}` : 'Ра�
       temperature: PLANNING_TEMPERATURE,
       maxOutputTokens: PLANNING_MAX_TOKENS,
       onError: (error) => {
-        console.error('[agent:plan] streamText error:', error);
+        logger.error('agent', 'Plan streamText onError', { taskGoal: task.goal.slice(0, 80) }, error);
       },
     });
 
@@ -434,19 +537,28 @@ ${task.fsScope ? `Рабочая директория: ${task.fsScope}` : 'Ра�
         setTimeout(() => reject(new Error('plan generation timeout (60s)')), 60_000)
       ),
     ]);
+    logger.debug('agent', `Plan LLM responded (${text.length} chars)`, {
+      preview: text.slice(0, 200),
+    });
 
     const jsonMatch = text.match(/\{[\s\S]*\}/);
     if (!jsonMatch) {
+      logger.warn('agent', 'Plan: no JSON found in response, using fallback', {
+        preview: text.slice(0, 200),
+      });
       return fallbackPlan(task);
     }
     const parsed = JSON.parse(jsonMatch[0]);
     const validated = planSchema.safeParse(parsed);
     if (!validated.success) {
+      logger.warn('agent', 'Plan: schema validation failed, using fallback', {
+        errors: validated.error.issues.map(i => `${i.path.join('.')}: ${i.message}`),
+      });
       return fallbackPlan(task);
     }
     return validated.data;
   } catch (e) {
-    console.warn('[agent:runner] plan generation failed:', e);
+    logger.warn('agent', 'Plan generation failed — using fallback', { goal: task.goal.slice(0, 80) }, e);
     return fallbackPlan(task);
   }
 }
@@ -541,6 +653,7 @@ async function executeStep(
   taskId: string,
   stepNum: number,
 ): Promise<StepResult> {
+  const log = logger.context({ taskId: taskId.slice(0, 8), step: stepNum });
   const model = await getChatModel();
   const { system, messages } = stepData;
 
@@ -550,6 +663,8 @@ async function executeStep(
   const modelName = (model as unknown as { modelId?: string }).modelId ?? '';
   const knownBadToolModels = ['gemma3:4b', 'gemma3:1b', 'phi3', 'tinyllama'];
   const tryWithTools = !knownBadToolModels.some(m => modelName.includes(m));
+
+  log.debug('agent', `executeStep — model=${modelName}, tryWithTools=${tryWithTools}`);
 
   // ── Attempt 1: with tools (native tool calling) ──
   if (tryWithTools) {
@@ -562,13 +677,20 @@ async function executeStep(
       temperature: EXECUTION_TEMPERATURE,
       maxOutputTokens: EXECUTION_MAX_TOKENS,
       onError: (error) => {
-        console.error(`[agent:step ${stepNum}] streamText with tools error:`, error);
+        log.error('agent', `Step ${stepNum} streamText (with tools) onError`, { modelName }, error);
       },
       onStepFinish: ({ toolCalls: tcs, toolResults: trs }) => {
         if (tcs) {
           for (let i = 0; i < tcs.length; i++) {
             const tc = tcs[i] as { toolName: string; input: unknown };
             const tr = trs?.[i] as { output: unknown; error?: string } | undefined;
+            log.info('tools', `Tool call: ${tc.toolName}`, {
+              success: !tr?.error,
+              inputPreview: JSON.stringify(tc.input).slice(0, 150),
+              outputPreview: tr?.output != null
+                ? (typeof tr.output === 'string' ? tr.output : JSON.stringify(tr.output)).slice(0, 150)
+                : 'null',
+            });
             emitAgentEvent({
               type: 'tool_start', taskId, step: stepNum, tool: tc.toolName, input: tc.input, ts: Date.now(),
             });
@@ -584,21 +706,27 @@ async function executeStep(
     try {
       // Race с таймаутом — если Ollama зависнет (например, при загрузке модели),
       // мы не блокируем агентский цикл навсегда.
+      const startMs = Date.now();
       fullText = await Promise.race([
         result.text,
         new Promise<string>((_, reject) =>
           setTimeout(() => reject(new Error('streamText timeout (60s)')), 60_000)
         ),
       ]);
+      log.debug('agent', `Step ${stepNum} streamText (with tools) done (${Date.now() - startMs}ms)`, {
+        textLength: fullText.length,
+        toolCallsCount: toolCalls.length,
+      });
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
-      console.warn(`[agent:step ${stepNum}] streamText with tools failed: ${msg}. Retrying without tools.`);
+      log.warn('agent', `Step ${stepNum} streamText (with tools) failed — retrying without tools`, { error: msg });
       fullText = '';
     }
   }
 
   // ── Attempt 2: without tools (text-only fallback) ──
   if (!fullText && toolCalls.length === 0) {
+    log.info('agent', `Step ${stepNum} fallback to text-only mode`);
     const result = streamText({
       model,
       system: system + '\n\nВАЖНО: У тебя нет прямого доступа к инструментам. Вместо вызова инструмента, опиши в тексте какое действие нужно выполнить и почему.',
@@ -606,19 +734,24 @@ async function executeStep(
       temperature: EXECUTION_TEMPERATURE,
       maxOutputTokens: EXECUTION_MAX_TOKENS,
       onError: (error) => {
-        console.error(`[agent:step ${stepNum}] streamText fallback error:`, error);
+        log.error('agent', `Step ${stepNum} streamText (fallback) onError`, { modelName }, error);
       },
     });
 
     try {
+      const startMs = Date.now();
       fullText = await Promise.race([
         result.text,
         new Promise<string>((_, reject) =>
           setTimeout(() => reject(new Error('streamText timeout (60s)')), 60_000)
         ),
       ]);
+      log.debug('agent', `Step ${stepNum} fallback streamText done (${Date.now() - startMs}ms)`, {
+        textLength: fullText.length,
+      });
     } catch (e) {
       fullText = `Ошибка: ${e instanceof Error ? e.message : String(e)}`;
+      log.error('agent', `Step ${stepNum} fallback streamText failed`, {}, e);
     }
   }
 
@@ -701,6 +834,10 @@ ${dialogueBlock}
 ${stepsBlock}`;
 
   try {
+    logger.debug('agent', `Synthesize: calling LLM (${SYNTHESIS_MAX_TOKENS} tokens max)`, {
+      stepsCount: steps.length,
+      dialogueLength: dialogueHistory.length,
+    });
     const result = await streamText({
       model,
       system: systemPrompt,
@@ -708,7 +845,7 @@ ${stepsBlock}`;
       temperature: SYNTHESIS_TEMPERATURE,
       maxOutputTokens: SYNTHESIS_MAX_TOKENS,
       onError: (error) => {
-        console.error('[agent:synthesize] streamText error:', error);
+        logger.error('agent', 'Synthesize streamText onError', { taskGoal: task.goal.slice(0, 80) }, error);
       },
     });
 
@@ -719,8 +856,10 @@ ${stepsBlock}`;
         setTimeout(() => reject(new Error('synthesize timeout (90s)')), 90_000)
       ),
     ]);
+    logger.debug('agent', `Synthesize LLM responded (${text.length} chars)`);
     return text.trim();
   } catch (e) {
+    logger.error('agent', 'Synthesize failed', { taskGoal: task.goal.slice(0, 80) }, e);
     return `Не удалось сформулировать итоговый ответ: ${e instanceof Error ? e.message : String(e)}`;
   }
 }
@@ -731,6 +870,10 @@ ${stepsBlock}`;
 // Emits task_waiting_input event so UI shows the question input.
 // ============================================================================
 async function pauseTaskForInput(taskId: string, question: string): Promise<string> {
+  logger.info('agent', `Pausing for user input`, {
+    taskId: taskId.slice(0, 8),
+    question: question.slice(0, 100),
+  });
   await updateAgentTask(taskId, { status: 'waiting_input' });
 
   // Emit event so SSE client shows the question input UI.
@@ -751,6 +894,10 @@ async function pauseTaskForInput(taskId: string, question: string): Promise<stri
       question,
       resolve: (answer: string) => {
         cleanup();
+        logger.info('agent', `User answered pause`, {
+          taskId: taskId.slice(0, 8),
+          answerPreview: answer.slice(0, 80),
+        });
         // DB update might fail — resolve anyway so the agent loop continues.
         // If status update fails, the runner will re-set it on next step.
         updateAgentTask(taskId, { status: 'executing' })
@@ -759,6 +906,10 @@ async function pauseTaskForInput(taskId: string, question: string): Promise<stri
       },
       reject: (err: Error) => {
         cleanup();
+        logger.warn('agent', `Pause rejected`, {
+          taskId: taskId.slice(0, 8),
+          error: err.message,
+        });
         reject(err);
       },
     });
@@ -787,16 +938,21 @@ async function pauseTaskForInput(taskId: string, question: string): Promise<stri
 // Cancel — called from API
 // ============================================================================
 export async function cancelAgentTaskRun(taskId: string): Promise<void> {
+  logger.info('agent', `Cancel requested`, { taskId: taskId.slice(0, 8) });
   signalCancellation(taskId);
   cancelWaiting(taskId);
 
+  // Даём бегущему циклу 200мс на реакцию (isCancelled проверяется между шагами).
   await new Promise(r => setTimeout(r, 200));
 
   const task = await getAgentTask(taskId);
   if (task && task.status !== 'done' && task.status !== 'cancelled' && task.status !== 'failed') {
+    logger.warn('agent', `Cancel: task was still in status '${task.status}', force-marking as cancelled`);
     await updateAgentTask(taskId, {
       status: 'cancelled',
       completedAt: new Date(),
     });
+  } else {
+    logger.debug('agent', `Cancel: task already in terminal status`, { status: task?.status });
   }
 }

@@ -7,6 +7,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getAgentTask, updateAgentTask } from '@/lib/agent/task';
 import { runAgentTask, isRunning } from '@/lib/agent/runner';
+import { logger } from '@/lib/logger';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -40,7 +41,7 @@ export async function POST(
 
     // Trigger runner in background — don't await
     runAgentTask(id).catch((e) => {
-      console.error(`[api/agent/${id}/start] runner crashed:`, e);
+      logger.error('agent', `Runner crashed`, { taskId: id.slice(0, 8) }, e);
     });
 
     // Give it a moment to flip status, then return current state
@@ -49,7 +50,7 @@ export async function POST(
 
     return NextResponse.json({ task: updated });
   } catch (e) {
-    console.error('[api/agent/[id]/start] failed:', e);
+    logger.error('agent', '/start] failed', {}, e);
     return NextResponse.json({ error: 'failed' }, { status: 500 });
   }
 }

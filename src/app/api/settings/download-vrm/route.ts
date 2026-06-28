@@ -8,6 +8,7 @@ import { writeFile, mkdir, access } from 'fs/promises';
 import path from 'path';
 import { PATHS } from '@/lib/paths';
 import { db } from '@/lib/db';
+import { logger } from '@/lib/logger';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -71,7 +72,7 @@ export async function POST() {
       sizeMb: (buffer.length / 1024 / 1024).toFixed(1),
     });
   } catch (e) {
-    console.error('[api/settings/download-vrm] failed:', e);
+    logger.error('api', 'failed', {}, e);
     return NextResponse.json(
       { error: e instanceof Error ? e.message : String(e) },
       { status: 500 },

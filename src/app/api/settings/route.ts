@@ -8,6 +8,7 @@ import { PATHS } from '@/lib/paths';
 import { existsSync, readdirSync } from 'fs';
 import path from 'path';
 import { DEFAULT_AVATAR_CONFIG, parseAvatarConfig, type AvatarConfig } from '@/lib/avatar-config';
+import { logger } from '@/lib/logger';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -143,7 +144,7 @@ export async function POST(req: NextRequest) {
       ),
     });
   } catch (e) {
-    console.error('[api/settings] POST failed:', e);
+    logger.error('api', 'POST failed', {}, e);
     return NextResponse.json({ error: 'failed' }, { status: 500 });
   }
 }

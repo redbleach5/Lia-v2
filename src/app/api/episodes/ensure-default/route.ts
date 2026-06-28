@@ -13,6 +13,7 @@
 import { NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { listEpisodes } from '@/lib/memory/episodes';
+import { logger } from '@/lib/logger';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -38,7 +39,7 @@ export async function POST() {
       episodeId: result.episodeId,
     });
   } catch (e) {
-    console.error('[api/episodes/ensure-default] failed:', e);
+    logger.error('api', 'failed', {}, e);
     return NextResponse.json({ error: 'failed' }, { status: 500 });
   }
 }

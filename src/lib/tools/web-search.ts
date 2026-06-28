@@ -2,6 +2,7 @@
 // + fetch_page — чтение содержимого веб-страницы с извлечением текста.
 
 import { db } from '@/lib/db';
+import { logger } from '@/lib/logger';
 
 type SearchResult = {
   title: string;
@@ -19,8 +20,10 @@ export async function webSearch(query: string): Promise<{
   count: number;
 }> {
   const url = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
+  const startMs = Date.now();
 
   try {
+    logger.debug('tools', `web_search: ${query.slice(0, 80)}`);
     const res = await fetch(url, {
       headers: {
         'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
@@ -31,11 +34,16 @@ export async function webSearch(query: string): Promise<{
     });
 
     if (!res.ok) {
+      logger.warn('tools', `web_search HTTP error`, { status: res.status, query: query.slice(0, 80) });
       return { query, results: [], count: 0 };
     }
 
     const html = await res.text();
     const results = parseDuckDuckGoHtml(html);
+    logger.info('tools', `web_search done (${Date.now() - startMs}ms)`, {
+      query: query.slice(0, 80),
+      resultsCount: results.length,
+    });
 
     // Log search for analytics
     try {
@@ -48,7 +56,7 @@ export async function webSearch(query: string): Promise<{
 
     return { query, results, count: results.length };
   } catch (e) {
-    console.warn('[web_search] failed:', e);
+    logger.warn('tools', `web_search failed`, { query: query.slice(0, 80) }, e);
     return { query, results: [], count: 0 };
   }
 }
@@ -69,6 +77,9 @@ export async function fetchPage(url: string, maxChars = 5000): Promise<{
   truncated: boolean;
   error?: string;
 }> {
+  const startMs = Date.now();
+  logger.debug('tools', `fetch_page: ${url.slice(0, 100)}`, { maxChars });
+
   try {
     const res = await fetch(url, {
       headers: {
@@ -81,6 +92,7 @@ export async function fetchPage(url: string, maxChars = 5000): Promise<{
     });
 
     if (!res.ok) {
+      logger.warn('tools', `fetch_page HTTP error`, { url: url.slice(0, 100), status: res.status });
       return { url, title: '', text: '', truncated: false, error: `HTTP ${res.status}` };
     }
 
@@ -89,6 +101,9 @@ export async function fetchPage(url: string, maxChars = 5000): Promise<{
     // For non-HTML (JSON, plain text) — return as-is
     if (contentType.includes('application/json') || contentType.includes('text/plain')) {
       const text = await res.text();
+      logger.info('tools', `fetch_page done (${Date.now() - startMs}ms) — plain text`, {
+        url: url.slice(0, 100), textLength: text.length, truncated: text.length > maxChars,
+      });
       return {
         url,
         title: '',
@@ -100,6 +115,11 @@ export async function fetchPage(url: string, maxChars = 5000): Promise<{
     // For HTML — extract readable text
     const html = await res.text();
     const { title, text } = extractReadableText(html, maxChars);
+    logger.info('tools', `fetch_page done (${Date.now() - startMs}ms) — HTML extracted`, {
+      url: url.slice(0, 100),
+      title: title.slice(0, 80),
+      textLength: text.length,
+    });
 
     return {
       url,
@@ -108,6 +128,7 @@ export async function fetchPage(url: string, maxChars = 5000): Promise<{
       truncated: html.length > maxChars * 3,  // rough estimate
     };
   } catch (e) {
+    logger.warn('tools', `fetch_page failed`, { url: url.slice(0, 100) }, e);
     return {
       url,
       title: '',

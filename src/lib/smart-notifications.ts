@@ -16,6 +16,7 @@
 import { webSearch } from '@/lib/tools/web-search';
 import type { Tier, CapabilityProfile } from '@/lib/capability-profile';
 import type { TaskComplexity } from '@/lib/task-complexity';
+import { logger } from '@/lib/logger';
 
 // ============================================================================
 // Types
@@ -161,7 +162,7 @@ export async function checkHardwareLimit(params: {
       ts: Date.now(),
     };
   } catch (e) {
-    console.warn('[smart-notifications] search failed:', e);
+    logger.warn('system', 'search failed', {}, e);
     return null;
   }
 }

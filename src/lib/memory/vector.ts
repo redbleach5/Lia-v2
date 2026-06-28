@@ -7,6 +7,7 @@
 import { embed } from '@/lib/ollama';
 import { insertVectorMemory, searchVectorsInEpisode, generateId } from '@/lib/db-vec';
 import { db } from '@/lib/db';
+import { logger } from '@/lib/logger';
 
 /**
  * Сохранить фрагмент в векторную память текущего эпизода.
@@ -26,7 +27,7 @@ export async function remember(params: {
       embedding,
     });
   } catch (e) {
-    console.warn('[memory:vector] remember failed (non-fatal):', e);
+    logger.warn('memory', 'remember failed (non-fatal)', {}, e);
   }
 }
 
@@ -56,7 +57,7 @@ export async function recall(params: {
       similarity: h.similarity,
     }));
   } catch (e) {
-    console.warn('[memory:vector] recall failed (non-fatal):', e);
+    logger.warn('memory', 'recall failed (non-fatal)', {}, e);
     return [];
   }
 }

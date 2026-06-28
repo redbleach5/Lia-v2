@@ -558,9 +558,14 @@ async function executeStep(
     const last = toolCalls[toolCalls.length - 1];
     action = last.name;
     input = last.input;
-    observation = typeof last.output === 'string'
-      ? last.output.slice(0, OBSERVATION_CAP)
-      : JSON.stringify(last.output).slice(0, OBSERVATION_CAP);
+    const out = last.output;
+    if (out == null) {
+      observation = '(no output)';
+    } else if (typeof out === 'string') {
+      observation = out.slice(0, OBSERVATION_CAP);
+    } else {
+      observation = JSON.stringify(out).slice(0, OBSERVATION_CAP);
+    }
   } else {
     observation = fullText.slice(0, OBSERVATION_CAP);
   }

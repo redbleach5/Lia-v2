@@ -492,53 +492,93 @@ async function executeStep(
   let fullText = '';
   const toolCalls: Array<{ name: string; input: unknown; output: unknown; success: boolean }> = [];
 
-  const result = streamText({
-    model,
-    messages,
-    tools,
-    stopWhen: isStepCount(3),
-    temperature: EXECUTION_TEMPERATURE,
-    maxOutputTokens: EXECUTION_MAX_TOKENS,
-    onStepFinish: ({ toolCalls: tcs, toolResults: trs }) => {
-      if (tcs) {
-        for (let i = 0; i < tcs.length; i++) {
-          const tc = tcs[i] as { toolName: string; input: unknown };
-          const tr = trs?.[i] as { output: unknown; error?: string } | undefined;
-          // Emit tool_start and tool_end — note: onStepFinish fires AFTER tool
-          // completes, so both events have the same timestamp. This is an AI SDK
-          // v7 limitation — there's no pre-execution hook.
-          emitAgentEvent({
-            type: 'tool_start',
-            taskId,
-            step: stepNum,
-            tool: tc.toolName,
-            input: tc.input,
-            ts: Date.now(),
-          });
-          emitAgentEvent({
-            type: 'tool_end',
-            taskId,
-            step: stepNum,
-            tool: tc.toolName,
-            success: !tr?.error,
-            output: tr?.output,
-            ts: Date.now(),
-          });
-          toolCalls.push({
-            name: tc.toolName,
-            input: tc.input,
-            output: tr?.output,
-            success: !tr?.error,
-          });
-        }
-      }
-    },
-  });
+  // Detect models that don't support native tool calling well.
+  // qwen2.5:7b supports tools via Ollama, but AI SDK v7 + Ollama OpenAI compat
+  // can fail with "No output generated" when tools are passed.
+  // Strategy: try WITH tools first. If it fails (NoOutputGeneratedError),
+  // retry WITHOUT tools — the model will describe what it wants to do in text,
+  // and we parse tool calls from the text response.
+  const modelName = (model as unknown as { modelId?: string }).modelId ?? '';
+  const knownBadToolModels = ['gemma3:4b', 'gemma3:1b', 'phi3', 'tinyllama'];
 
-  try {
-    fullText = await result.text;
-  } catch (e) {
-    fullText = `Ошибка: ${e instanceof Error ? e.message : String(e)}`;
+  const tryWithTools = !knownBadToolModels.some(m => modelName.includes(m));
+
+  // ── Attempt 1: with tools (if model supports them) ──
+  if (tryWithTools) {
+    const result = streamText({
+      model,
+      messages,
+      tools,
+      stopWhen: isStepCount(3),
+      temperature: EXECUTION_TEMPERATURE,
+      maxOutputTokens: EXECUTION_MAX_TOKENS,
+      onStepFinish: ({ toolCalls: tcs, toolResults: trs }) => {
+        if (tcs) {
+          for (let i = 0; i < tcs.length; i++) {
+            const tc = tcs[i] as { toolName: string; input: unknown };
+            const tr = trs?.[i] as { output: unknown; error?: string } | undefined;
+            emitAgentEvent({
+              type: 'tool_start',
+              taskId,
+              step: stepNum,
+              tool: tc.toolName,
+              input: tc.input,
+              ts: Date.now(),
+            });
+            emitAgentEvent({
+              type: 'tool_end',
+              taskId,
+              step: stepNum,
+              tool: tc.toolName,
+              success: !tr?.error,
+              output: tr?.output,
+              ts: Date.now(),
+            });
+            toolCalls.push({
+              name: tc.toolName,
+              input: tc.input,
+              output: tr?.output,
+              success: !tr?.error,
+            });
+          }
+        }
+      },
+    });
+
+    try {
+      fullText = await result.text;
+    } catch (e) {
+      // NoOutputGeneratedError or other stream error — fall through to text-only mode
+      console.warn(`[agent:step ${stepNum}] streamText with tools failed: ${e instanceof Error ? e.message : String(e)}. Retrying without tools.`);
+      fullText = '';
+    }
+  }
+
+  // ── Attempt 2: without tools (text-only — model describes what to do) ──
+  if (!fullText && toolCalls.length === 0) {
+    // Modify system prompt to instruct model to describe tool calls in text
+    const textOnlyMessages = messages.map(m => {
+      if (m.role === 'system') {
+        return {
+          ...m,
+          content: m.content + '\n\nВАЖНО: У тебя нет прямого доступа к инструментам. Вместо вызова инструмента, опиши в тексте какое действие нужно выполнить и почему. Например: "Мне нужно выполнить web_search с запросом X" или "Мне нужно использовать code_run для проверки кода".',
+        };
+      }
+      return m;
+    });
+
+    const result = streamText({
+      model,
+      messages: textOnlyMessages,
+      temperature: EXECUTION_TEMPERATURE,
+      maxOutputTokens: EXECUTION_MAX_TOKENS,
+    });
+
+    try {
+      fullText = await result.text;
+    } catch (e) {
+      fullText = `Ошибка: ${e instanceof Error ? e.message : String(e)}`;
+    }
   }
 
   // Determine action

@@ -47,6 +47,9 @@ export function useChat() {
             episodeId,
             goal: text,
             autoStart: true,
+            // Default workspace — creates a temp directory for agent file operations.
+            // User can change this in settings later.
+            fsScope: undefined,  // Will be set by UI in future, for now agent works without
           }),
         });
         if (!res.ok) {

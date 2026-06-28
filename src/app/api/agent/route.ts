@@ -5,6 +5,10 @@ import { NextRequest, NextResponse } from 'next/server';
 import { listAgentTasks, createAgentTask, type AgentTaskStatus } from '@/lib/agent/task';
 import { runAgentTask, sweepStaleTasks } from '@/lib/agent/runner';
 import { getCognitiveParams } from '@/lib/capability-profile';
+import { mkdir } from 'fs/promises';
+import { join } from 'path';
+import { PATHS } from '@/lib/paths';
+import { randomUUID } from 'crypto';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -61,11 +65,27 @@ export async function POST(req: NextRequest) {
     // Get capability profile to set adaptive agent limits
     const { params: tierParams } = await getCognitiveParams();
 
+    // Auto-create workspace directory if not provided.
+    // Each agent task gets its own directory under download/agent-workspaces/<taskId>
+    // This ensures write_file, edit_file, code_run (with file output) all work.
+    let finalFsScope = typeof fsScope === 'string' && fsScope.trim() ? fsScope.trim() : null;
+    if (!finalFsScope) {
+      const workspaceDir = join(PATHS.artifacts, '..', 'agent-workspaces');
+      const taskWorkspace = join(workspaceDir, `task-${Date.now()}-${randomUUID().slice(0, 8)}`);
+      try {
+        await mkdir(taskWorkspace, { recursive: true });
+        finalFsScope = taskWorkspace;
+      } catch (e) {
+        console.warn('[api/agent] failed to create workspace:', e);
+        // Continue without workspace — agent can still use save_artifact, web_search, etc.
+      }
+    }
+
     const task = await createAgentTask({
       episodeId,
       goal: goal.trim(),
       toolsWhitelist: Array.isArray(toolsWhitelist) ? toolsWhitelist : null,
-      fsScope: typeof fsScope === 'string' ? fsScope : null,
+      fsScope: finalFsScope,
       // Use tier-adaptive limits if not explicitly provided
       maxSteps: typeof maxSteps === 'number'
         ? Math.min(tierParams.agentMaxSteps, Math.max(1, maxSteps))

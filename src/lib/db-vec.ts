@@ -248,16 +248,19 @@ export function countVectorsInEpisode(episodeId: string): number {
 
 /**
  * Delete all vectors for an episode.
+ * Each step is wrapped in try/catch — tables may not exist if DB wasn't migrated.
  */
 export function deleteVectorsInEpisode(episodeId: string): void {
-  // Get rowids to delete from vec_virtual
-  const rowids = db.prepare('SELECT rowid FROM vec_rowid_map WHERE episode_id = ?').all(episodeId) as Array<{ rowid: number }>;
-  if (rowids.length > 0) {
-    const placeholders = rowids.map(() => '?').join(',');
-    db.prepare(`DELETE FROM vec_virtual WHERE rowid IN (${placeholders})`).run(...rowids.map(r => r.rowid));
-  }
-  db.prepare('DELETE FROM vec_rowid_map WHERE episode_id = ?').run(episodeId);
-  db.prepare('DELETE FROM VectorMemory WHERE episodeId = ?').run(episodeId);
+  try {
+    const rowids = db.prepare('SELECT rowid FROM vec_rowid_map WHERE episode_id = ?').all(episodeId) as Array<{ rowid: number }>;
+    if (rowids.length > 0) {
+      const placeholders = rowids.map(() => '?').join(',');
+      db.prepare(`DELETE FROM vec_virtual WHERE rowid IN (${placeholders})`).run(...rowids.map(r => r.rowid));
+    }
+  } catch { /* vec tables may not exist yet */ }
+
+  try { db.prepare('DELETE FROM vec_rowid_map WHERE episode_id = ?').run(episodeId); } catch { /* */ }
+  try { db.prepare('DELETE FROM VectorMemory WHERE episodeId = ?').run(episodeId); } catch { /* Prisma table may not exist */ }
 }
 
 /**

@@ -25,9 +25,14 @@ export function useHealth() {
     check();
     interval = setInterval(check, 60_000);
 
+    // Перепроверяем health сразу после смены настроек Ollama в SettingsDialog.
+    const onSettingsChanged = () => { check(); };
+    window.addEventListener('lia-settings-changed', onSettingsChanged);
+
     return () => {
       cancelled = true;
       clearInterval(interval);
+      window.removeEventListener('lia-settings-changed', onSettingsChanged);
     };
   }, [setHealth]);
 }

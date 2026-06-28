@@ -2,12 +2,25 @@
 
 import { useChatStore } from '@/stores/chat-store';
 import { AlertCircle } from 'lucide-react';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 
 export function OllamaBanner() {
   const ok = useChatStore(s => s.ollamaOk);
   const error = useChatStore(s => s.ollamaError);
   const [dismissed, setDismissed] = useState(false);
+
+  // Если настройки изменились (пользователь сменил URL) — сбрасываем dismissed,
+  // чтобы баннер показал актуальный статус нового подключения.
+  useEffect(() => {
+    const handler = () => setDismissed(false);
+    window.addEventListener('lia-settings-changed', handler);
+    return () => window.removeEventListener('lia-settings-changed', handler);
+  }, []);
+
+  // Если Ollama стал доступен — сбрасываем dismissed, чтобы при следующем сбое баннер появился снова.
+  useEffect(() => {
+    if (ok) setDismissed(false);
+  }, [ok]);
 
   if (ok === null) return null; // unknown — silent
   if (ok) return null;
@@ -28,8 +41,6 @@ export function OllamaBanner() {
       <button
         onClick={() => {
           setDismissed(true);
-          // Trigger health re-check
-          window.dispatchEvent(new Event('lia-recheck-health'));
         }}
         className="text-xs text-muted-foreground hover:text-foreground transition-colors px-2 py-1 rounded hover:bg-surface-2"
       >

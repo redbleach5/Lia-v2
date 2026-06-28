@@ -2,7 +2,7 @@
 // POST /api/settings — update Ollama settings + avatar config
 
 import { NextRequest, NextResponse } from 'next/server';
-import { getOllamaSettings, setOllamaSettings, checkOllamaHealth } from '@/lib/ollama';
+import { getOllamaSettings, setOllamaSettings, checkOllamaHealth, reloadSettings } from '@/lib/ollama';
 import { db } from '@/lib/db';
 import { PATHS } from '@/lib/paths';
 import { existsSync, readdirSync } from 'fs';
@@ -73,6 +73,11 @@ export async function POST(req: NextRequest) {
   try {
     const body = await req.json().catch(() => ({}));
 
+    const ollamaChanged =
+      typeof body.baseUrl === 'string' ||
+      typeof body.model === 'string' ||
+      typeof body.embedModel === 'string';
+
     // Ollama settings
     if (typeof body.baseUrl === 'string') {
       await setOllamaSettings({ baseUrl: body.baseUrl });
@@ -113,8 +118,30 @@ export async function POST(req: NextRequest) {
       });
     }
 
+    // Если Ollama-настройки менялись — принудительно перечитываем и инвалидируем кэш,
+    // чтобы следующий /api/settings GET вернул актуальный health-статус.
+    if (ollamaChanged) {
+      await reloadSettings();
+    }
+
+    // Возвращаем обновлённые настройки + свежий health.
+    // reloadSettings() уже сбросил healthCache, так что checkOllamaHealth даст актуальный статус.
     const settings = await getOllamaSettings();
-    return NextResponse.json(settings);
+    const health = await checkOllamaHealth();
+    return NextResponse.json({
+      ...settings,
+      ollamaOk: health.ok,
+      ollamaError: health.error,
+      availableModels: health.models ?? [],
+      availableEmbedModels: (health.models ?? []).filter(m =>
+        m.startsWith('nomic-embed') ||
+        m.startsWith('mxbai-embed') ||
+        m.startsWith('bge-m3') ||
+        m.startsWith('snowflake-arctic-embed') ||
+        m.startsWith('bge-') ||
+        m.startsWith('e5-')
+      ),
+    });
   } catch (e) {
     console.error('[api/settings] POST failed:', e);
     return NextResponse.json({ error: 'failed' }, { status: 500 });

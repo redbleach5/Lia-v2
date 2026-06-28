@@ -13,7 +13,7 @@ import { AgentPanel } from './agent-panel';
 import { RLPanel } from './rl-panel';
 import { CapabilityIndicator } from './capability-indicator';
 import { Sparkles, ChevronDown, Eye, EyeOff } from 'lucide-react';
-import { useState, useEffect, type ReactNode } from 'react';
+import { useState, useEffect, useCallback, type ReactNode } from 'react';
 import { dominantEmotion } from '@/lib/emotion';
 import { EMOTION_LABELS_RU, type EmotionAxis } from '@/lib/personality';
 import { DEFAULT_AVATAR_CONFIG, parseAvatarConfig, type AvatarConfig } from '@/lib/avatar-config';
@@ -44,18 +44,41 @@ export function AvatarColumn() {
   const [vrmSrc, setVrmSrc] = useState<string | undefined>(undefined);
   const [avatarConfig, setAvatarConfig] = useState<AvatarConfig>(DEFAULT_AVATAR_CONFIG);
   const [emotionsExpanded, setEmotionsExpanded] = useState(false);
+  const [vrmFailed, setVrmFailed] = useState(false);
 
   // Load avatar settings + config from API
   useEffect(() => {
-    fetch('/api/settings')
-      .then(res => res.json())
-      .then(data => {
-        setAvatarMode(data.avatarMode === 'live2d' ? 'live2d' : '3d');
-        if (data.activeVrm) setVrmSrc(data.activeVrm);
-        if (data.avatarConfig) setAvatarConfig(parseAvatarConfig(JSON.stringify(data.avatarConfig)));
-      })
-      .catch(() => { /* use defaults */ });
+    const loadSettings = () => {
+      fetch('/api/settings')
+        .then(res => res.json())
+        .then(data => {
+          setAvatarMode(data.avatarMode === 'live2d' ? 'live2d' : '3d');
+          if (data.activeVrm) setVrmSrc(data.activeVrm);
+          if (data.avatarConfig) setAvatarConfig(parseAvatarConfig(JSON.stringify(data.avatarConfig)));
+        })
+        .catch(() => { /* use defaults */ });
+    };
+    loadSettings();
+
+    // Перечитываем настройки когда они изменились через SettingsDialog.
+    window.addEventListener('lia-settings-changed', loadSettings);
+    return () => window.removeEventListener('lia-settings-changed', loadSettings);
   }, []);
+
+  // Если VRM упал — переключаемся на Live2D автоматически.
+  // Пользователь может переключиться обратно в настройках после загрузки VRM.
+  const handleVrmError = useCallback(() => {
+    console.warn('[AvatarColumn] VRM failed, falling back to Live2D');
+    setVrmFailed(true);
+  }, []);
+
+  // Сбрасываем флаг ошибки VRM когда пользователь меняет src или режим.
+  useEffect(() => {
+    setVrmFailed(false);
+  }, [vrmSrc, avatarMode]);
+
+  // Реальный режим для рендера: если VRM упал — показываем Live2D.
+  const effectiveMode: 'live2d' | '3d' = vrmFailed ? 'live2d' : avatarMode;
 
   const dom = dominantEmotion(emotion);
   const domLabel = EMOTION_TEXT[dom];
@@ -67,7 +90,7 @@ export function AvatarColumn() {
       <div className="relative shrink-0 p-4 pb-2">
         {/* Карточка-«сцена» — аватар стоит вписанный, а не «висящий» в пустоте */}
         <div className="relative rounded-xl overflow-hidden border border-border bg-gradient-to-b from-surface to-surface-2/40 aspect-square">
-          {avatarMode === '3d' ? (
+          {effectiveMode === '3d' ? (
             <VrmErrorBoundary onError={() => setAvatarMode('live2d')}>
               <div className="absolute inset-0">
                 <VrmAvatar
@@ -76,6 +99,7 @@ export function AvatarColumn() {
                   size={288}
                   src={vrmSrc}
                   config={avatarConfig}
+                  onLoadError={handleVrmError}
                 />
               </div>
             </VrmErrorBoundary>
@@ -99,6 +123,13 @@ export function AvatarColumn() {
             <div className="absolute top-2 right-2 flex items-center gap-1 px-2 py-0.5 rounded-full bg-accent/15 border border-accent/30">
               <span className="w-1.5 h-1.5 rounded-full bg-accent animate-pulse" />
               <span className="text-[10px] text-accent font-medium">говорит</span>
+            </div>
+          )}
+
+          {/* Индикатор fallback-режима — если VRM не загрузился */}
+          {vrmFailed && avatarMode === '3d' && (
+            <div className="absolute top-2 left-2 px-2 py-0.5 rounded-full bg-warning/15 border border-warning/30">
+              <span className="text-[10px] text-warning font-medium">2D fallback</span>
             </div>
           )}
         </div>

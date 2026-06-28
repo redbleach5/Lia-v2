@@ -68,6 +68,10 @@ export function useChat() {
         const msg = e instanceof Error ? e.message : String(e);
         console.error('[useChat] agent create failed:', e);
         toast.error(`Не удалось создать задачу: ${msg}`);
+        // Удаляем user message — задача не создалась, нет смысла показывать "висящее" сообщение.
+        useChatStore.setState((s) => ({
+          messages: s.messages.filter(m => m.id !== userMsg.id),
+        }));
       }
       return;
     }
@@ -100,6 +104,13 @@ export function useChat() {
         signal: abortRef.current.signal,
       });
 
+      // Специальная обработка 503 — Ollama недоступен или нет моделей.
+      // Сервер возвращает понятное сообщение — показываем его без технических деталей.
+      if (res.status === 503) {
+        const err = await res.json().catch(() => ({ error: 'Ollama недоступен' }));
+        throw new Error(err.error || 'Ollama недоступен');
+      }
+
       if (!res.ok) {
         const err = await res.json().catch(() => ({ error: 'request failed' }));
         throw new Error(err.error || `HTTP ${res.status}`);
@@ -109,7 +120,21 @@ export function useChat() {
       }
 
       // Read emotion from headers
-      const emotionHeader = res.headers.get('X-Emotion');
+      // Заголовки с non-ASCII (русский текст) закодированы в base64 на сервере.
+      // Декодируем обратно в UTF-8 строку перед JSON.parse.
+      const decodeHeader = (s: string | null): string | null => {
+        if (!s) return null;
+        try {
+          // atob декодирует base64 в binary string, TextDecoder — в UTF-8
+          const binary = atob(s);
+          const bytes = Uint8Array.from(binary, c => c.charCodeAt(0));
+          return new TextDecoder().decode(bytes);
+        } catch {
+          return s; // если декодирование не удалось — возвращаем как есть
+        }
+      };
+
+      const emotionHeader = decodeHeader(res.headers.get('X-Emotion'));
       if (emotionHeader) {
         try {
           const emotion = JSON.parse(emotionHeader);
@@ -128,8 +153,8 @@ export function useChat() {
         deliberate: res.headers.get('X-Deliberate'),
         selfCheck: res.headers.get('X-SelfCheck'),
         modelSize: res.headers.get('X-ModelSize'),
-        disagreement: res.headers.get('X-Disagreement'),
-        rlAction: res.headers.get('X-RL-Action'),
+        disagreement: decodeHeader(res.headers.get('X-Disagreement')),
+        rlAction: decodeHeader(res.headers.get('X-RL-Action')),
         rlConfidence: res.headers.get('X-RL-Confidence'),
       };
       if (meta.rlAction && meta.rlAction !== 'none') {
@@ -153,13 +178,26 @@ export function useChat() {
       useChatStore.getState().finalizeLastMessage();
     } catch (e) {
       if (e instanceof Error && e.name === 'AbortError') {
+        // Пользователь сам отменил — оставляем что есть, финализируем.
         useChatStore.getState().finalizeLastMessage();
       } else {
         const msg = e instanceof Error ? e.message : String(e);
         console.error('[useChat] error:', e);
-        toast.error(`Не удалось отправить: ${msg}`);
-        useChatStore.getState().updateLastMessage('⚠️ Соединение прервано. Попробуй ещё раз.');
-        useChatStore.getState().finalizeLastMessage();
+
+        // Если стрим ещё не начался (liaMsg пустой) — удаляем оба сообщения
+        // (user + placeholder lia), чтобы не засорять чат ошибочными попытками.
+        const state = useChatStore.getState();
+        const lastMsg = state.messages[state.messages.length - 1];
+        if (lastMsg && lastMsg.role === 'companion' && lastMsg.streaming && !lastMsg.content) {
+          // Удаляем placeholder lia + последнее user-сообщение.
+          useChatStore.setState((s) => ({ messages: s.messages.slice(0, -2) }));
+          toast.error(msg);
+        } else {
+          // Стрим уже начался — показываем что есть, помечаем как прерванное.
+          toast.error(`Не удалось отправить: ${msg}`);
+          useChatStore.getState().updateLastMessage('⚠️ Соединение прервано. Попробуй ещё раз.');
+          useChatStore.getState().finalizeLastMessage();
+        }
       }
     } finally {
       useChatStore.getState().setStreaming(false);

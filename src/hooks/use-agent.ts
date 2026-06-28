@@ -12,6 +12,10 @@ export function useAgent() {
 
   // SSE subscription refs
   const eventSourceRef = useRef<EventSource | null>(null);
+  // Счётчик reconnect-попыток. Если SSE падает слишком часто —
+  // fallback на polling через /api/agent/[id] каждые 3 сек.
+  const reconnectCountRef = useRef(0);
+  const pollingIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const refresh = useCallback(async () => {
     try {
@@ -92,12 +96,66 @@ export function useAgent() {
   }, [refresh]);
 
   // ── SSE subscription for the active task ──
+  // Если SSE падает 5+ раз за короткое время — переключаемся на polling,
+  // чтобы прогресс задачи всё равно обновлялся.
   useEffect(() => {
+    // Cleanup любой предыдущей подписки (SSE или polling).
     if (eventSourceRef.current) {
       eventSourceRef.current.close();
       eventSourceRef.current = null;
     }
+    if (pollingIntervalRef.current) {
+      clearInterval(pollingIntervalRef.current);
+      pollingIntervalRef.current = null;
+    }
+    reconnectCountRef.current = 0;
+
     if (!activeTaskId) return;
+
+    const startPolling = () => {
+      console.warn('[agent] SSE failed multiple times, falling back to polling');
+      if (pollingIntervalRef.current) clearInterval(pollingIntervalRef.current);
+      pollingIntervalRef.current = setInterval(async () => {
+        try {
+          const res = await fetch(`/api/agent/${activeTaskId}`);
+          if (!res.ok) return;
+          const data = await res.json();
+          const task = data.task;
+          if (!task) return;
+          useChatStore.getState().setActiveTaskStatus(task.status);
+          if (task.status === 'done') {
+            useChatStore.getState().setActiveTaskResult(task.resultSummary);
+            updateAgentTaskInList(activeTaskId, {
+              status: 'done',
+              resultSummary: task.resultSummary,
+            });
+            if (pollingIntervalRef.current) {
+              clearInterval(pollingIntervalRef.current);
+              pollingIntervalRef.current = null;
+            }
+          } else if (task.status === 'failed') {
+            useChatStore.getState().setActiveTaskError(task.error ?? 'unknown error');
+            updateAgentTaskInList(activeTaskId, {
+              status: 'failed',
+              error: task.error,
+            });
+            if (pollingIntervalRef.current) {
+              clearInterval(pollingIntervalRef.current);
+              pollingIntervalRef.current = null;
+            }
+          } else if (task.status === 'cancelled') {
+            useChatStore.getState().setActiveTaskStatus('cancelled');
+            updateAgentTaskInList(activeTaskId, { status: 'cancelled' });
+            if (pollingIntervalRef.current) {
+              clearInterval(pollingIntervalRef.current);
+              pollingIntervalRef.current = null;
+            }
+          }
+        } catch (e) {
+          console.warn('[agent] polling error:', e);
+        }
+      }, 2000);
+    };
 
     const es = new EventSource(`/api/agent/${activeTaskId}/stream`);
     eventSourceRef.current = es;
@@ -108,6 +166,13 @@ export function useAgent() {
       try {
         const task = JSON.parse((e as MessageEvent).data);
         store.setActiveTaskStatus(task.status);
+        // Если задача уже в финальном состоянии — синхронизируем UI.
+        if (task.status === 'failed' && task.error) {
+          useChatStore.getState().setActiveTaskError(task.error);
+        }
+        if (task.status === 'done' && task.resultSummary) {
+          useChatStore.getState().setActiveTaskResult(task.resultSummary);
+        }
       } catch { /* */ }
     });
 
@@ -214,12 +279,25 @@ export function useAgent() {
     });
 
     es.onerror = () => {
-      // EventSource will auto-reconnect
+      // EventSource пытается reconnect автоматически, но если падает
+      // 5+ раз — переходим на polling как более надёжный fallback.
+      reconnectCountRef.current += 1;
+      if (reconnectCountRef.current >= 5 && !pollingIntervalRef.current) {
+        // Закрываем SSE и стартуем polling.
+        es.close();
+        eventSourceRef.current = null;
+        startPolling();
+      }
+      // Иначе — EventSource сам переподключится со своим backoff.
     };
 
     return () => {
       es.close();
       eventSourceRef.current = null;
+      if (pollingIntervalRef.current) {
+        clearInterval(pollingIntervalRef.current);
+        pollingIntervalRef.current = null;
+      }
     };
   }, [activeTaskId, updateAgentTaskInList]);
 

@@ -41,10 +41,23 @@ async function loadSettings(): Promise<void> {
     } catch (e) {
       console.warn('[ollama] failed to load settings, using env defaults:', e);
       settingsLoaded = true; // don't retry forever
+    } finally {
+      settingsLoadPromise = null;
     }
   })();
 
   return settingsLoadPromise;
+}
+
+/**
+ * Принудительно перечитать настройки из БД.
+ * Полезно когда внешний процесс (или другой запрос) изменил настройки,
+ * а текущий in-memory кэш устарел.
+ */
+export async function reloadSettings(): Promise<void> {
+  settingsLoaded = false;
+  healthCache = null;
+  await loadSettings();
 }
 
 export async function getOllamaSettings() {
@@ -61,6 +74,10 @@ export async function setOllamaSettings(params: {
   model?: string;
   embedModel?: string;
 }) {
+  // Помечаем что настройки загружены — иначе параллельный loadSettings()
+  // может перезаписать только что сохранённые значения дефолтами из env.
+  settingsLoaded = true;
+
   if (params.baseUrl !== undefined) {
     currentBaseUrl = params.baseUrl.replace(/\/$/, '');
     await db.setting.upsert({
@@ -68,6 +85,9 @@ export async function setOllamaSettings(params: {
       create: { key: 'ollama_base_url', value: currentBaseUrl },
       update: { value: currentBaseUrl },
     });
+    // Инвалидируем кэш провайдера — новый URL требует пересоздания.
+    provider = null;
+    providerBaseUrl = '';
   }
   if (params.model !== undefined) {
     currentModel = params.model;
@@ -90,6 +110,9 @@ export async function setOllamaSettings(params: {
       });
     }
   }
+  // ВСЕГДА инвалидируем health cache при смене настроек, чтобы UI и pre-flight
+  // проверки видели актуальное состояние, а не 30-секундный кэш.
+  healthCache = null;
 }
 
 // ============================================================================

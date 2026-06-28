@@ -24,6 +24,9 @@ export type VrmAvatarProps = {
   size?: number;
   src?: string;
   config?: AvatarConfig;
+  /** Вызывается когда VRM не удалось загрузить (файл отсутствует/битый).
+   *  Родитель может переключиться на Live2D fallback. */
+  onLoadError?: () => void;
 };
 
 const DEFAULT_VRM_SRC = '/models/Lia.vrm';
@@ -45,6 +48,7 @@ export function VrmAvatar({
   size = 280,
   src = DEFAULT_VRM_SRC,
   config = DEFAULT_AVATAR_CONFIG,
+  onLoadError,
 }: VrmAvatarProps) {
   const cameraPos: [number, number, number] = config.camera.preset === 'custom'
     ? config.camera.position
@@ -71,6 +75,7 @@ export function VrmAvatar({
             src={src}
             config={config}
             cameraTarget={cameraTarget}
+            onLoadError={onLoadError}
           />
         </Suspense>
       </Canvas>
@@ -108,12 +113,14 @@ function Scene({
   src,
   config,
   cameraTarget,
+  onLoadError,
 }: {
   emotion: EmotionVector;
   speaking: boolean;
   src: string;
   config: AvatarConfig;
   cameraTarget: [number, number, number];
+  onLoadError?: () => void;
 }) {
   const dom = dominantEmotion(emotion);
   const colors = EMOTION_COLORS[dom];
@@ -141,7 +148,7 @@ function Scene({
         />
       )}
 
-      <VrmModel emotion={emotion} speaking={speaking} src={src} config={config} />
+      <VrmModel emotion={emotion} speaking={speaking} src={src} config={config} onLoadError={onLoadError} />
 
       {config.platform.shape !== 'off' && (
         <Platform colors={colors} intensity={intensity} config={config.platform} />
@@ -479,17 +486,20 @@ function VrmModel({
   speaking,
   src,
   config,
+  onLoadError,
 }: {
   emotion: EmotionVector;
   speaking: boolean;
   src: string;
   config: AvatarConfig;
+  onLoadError?: () => void;
 }) {
   const groupRef = useRef<THREE.Group>(null);
   const vrmRef = useRef<VRM | null>(null);
   const basesRef = useRef<BoneBases>(createEmptyBases());
   const [loaded, setLoaded] = useState(false);
   const [loadFailed, setLoadFailed] = useState(false);
+  const onLoadErrorCalledRef = useRef(false);
 
   // ── Загрузка VRM + применение позы + сохранение баз ──
   // ВСЁ в одном useEffect, чтобы гарантировать порядок:
@@ -498,6 +508,7 @@ function VrmModel({
     let cancelled = false;
     setLoaded(false);
     setLoadFailed(false);
+    onLoadErrorCalledRef.current = false;
 
     const loader = new GLTFLoader();
     loader.register((parser) => new VRMLoaderPlugin(parser));
@@ -510,6 +521,10 @@ function VrmModel({
         if (!vrm) {
           console.error('[VRM] No VRM in gltf');
           setLoadFailed(true);
+          if (!onLoadErrorCalledRef.current) {
+            onLoadErrorCalledRef.current = true;
+            onLoadError?.();
+          }
           return;
         }
 
@@ -607,11 +622,16 @@ function VrmModel({
         if (cancelled) return;
         console.error('[VRM] load failed:', err);
         setLoadFailed(true);
+        // Уведомляем родителя один раз — он может переключиться на Live2D fallback.
+        if (!onLoadErrorCalledRef.current) {
+          onLoadErrorCalledRef.current = true;
+          onLoadError?.();
+        }
       },
     );
 
     return () => { cancelled = true; };
-  }, [src, config.body.armPose, config.body.scale, config.body.yOffset]);
+  }, [src, config.body.armPose, config.body.scale, config.body.yOffset, onLoadError]);
 
   // ── Состояние анимаций ──
   const animState = useRef({
@@ -861,7 +881,15 @@ function VrmModel({
     }
     setExpr(vrm, 'aa', animState.current.mouthValue);
 
-    vrm.update(delta);
+    // vrm.update() может выбросить если модель повреждена или в невалидном
+    // состоянии. try/catch предотвращает краш всего React tree.
+    try {
+      vrm.update(delta);
+    } catch (e) {
+      console.error('[VRM] vrm.update() failed:', e);
+      // Не отключаем анимации полностью — в следующем кадре может стать лучше.
+      // Если ошибка повторяется, VrmErrorBoundary перехватит.
+    }
   });
 
   if (loadFailed) {
@@ -881,8 +909,12 @@ function VrmModel({
 function setExpr(vrm: VRM, name: VRMExpressionPresetName | string, value: number) {
   if (!vrm.expressionManager) return;
   try {
-    vrm.expressionManager.setValue(name as VRMExpressionPresetName, Math.max(0, Math.min(1, value)));
-  } catch { /* skip */ }
+    const clamped = Math.max(0, Math.min(1, value));
+    vrm.expressionManager.setValue(name as VRMExpressionPresetName, clamped);
+  } catch (e) {
+    // Некоторые VRM-модели могут не иметь определённых blendshapes.
+    // Молча игнорируем — это не критично.
+  }
 }
 
 function emotionToBlendshapes(e: EmotionVector): Record<string, number> {

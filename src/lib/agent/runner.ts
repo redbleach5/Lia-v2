@@ -14,7 +14,7 @@
 // (требует persistent queue), но данные в БД есть.
 
 import { streamText, isStepCount, type ModelMessage, type ToolSet } from 'ai';
-import { getChatModel } from '@/lib/ollama';
+import { getChatModel, checkOllamaHealth } from '@/lib/ollama';
 import { db } from '@/lib/db';
 import { z } from 'zod';
 import {
@@ -125,6 +125,51 @@ export async function runAgentTask(taskId: string): Promise<void> {
   clearCancellation(taskId);
 
   try {
+    // ── 0. Pre-flight: Ollama availability check ──
+    // Если Ollama недоступен — задача сразу переходит в failed с понятной ошибкой,
+    // а не пытается 3 раза ретраить каждый LLM-вызов и повесить цикл.
+    const preflight = await checkOllamaHealth();
+    if (!preflight.ok) {
+      await updateAgentTask(taskId, {
+        status: 'failed',
+        completedAt: new Date(),
+        error: `Ollama недоступен: ${preflight.error ?? 'unknown'}. Запусти \`ollama serve\` и проверь URL в настройках.`,
+      });
+      emitAgentEvent({
+        type: 'task_failed',
+        taskId,
+        error: `Ollama недоступен: ${preflight.error ?? 'unknown'}`,
+        ts: Date.now(),
+      });
+      bufferEvent({
+        type: 'task_failed',
+        taskId,
+        error: `Ollama недоступен: ${preflight.error ?? 'unknown'}`,
+        ts: Date.now(),
+      });
+      return;
+    }
+    if (preflight.models.length === 0) {
+      await updateAgentTask(taskId, {
+        status: 'failed',
+        completedAt: new Date(),
+        error: 'В Ollama нет моделей. Скачай хотя бы одну: `ollama pull qwen2.5:7b`.',
+      });
+      emitAgentEvent({
+        type: 'task_failed',
+        taskId,
+        error: 'В Ollama нет моделей',
+        ts: Date.now(),
+      });
+      bufferEvent({
+        type: 'task_failed',
+        taskId,
+        error: 'В Ollama нет моделей',
+        ts: Date.now(),
+      });
+      return;
+    }
+
     await updateAgentTask(taskId, {
       status: 'planning',
       startedAt: task.startedAt ?? new Date(),
@@ -377,9 +422,18 @@ ${task.fsScope ? `Рабочая директория: ${task.fsScope}` : 'Ра�
       messages: [{ role: 'user', content: `Задача: "${task.goal}"` }],
       temperature: PLANNING_TEMPERATURE,
       maxOutputTokens: PLANNING_MAX_TOKENS,
+      onError: (error) => {
+        console.error('[agent:plan] streamText error:', error);
+      },
     });
 
-    const text = await result.text;
+    // Таймаут 60 сек — если LLM не отвечает, fallback на дефолтный план.
+    const text = await Promise.race([
+      result.text,
+      new Promise<string>((_, reject) =>
+        setTimeout(() => reject(new Error('plan generation timeout (60s)')), 60_000)
+      ),
+    ]);
 
     const jsonMatch = text.match(/\{[\s\S]*\}/);
     if (!jsonMatch) {
@@ -507,6 +561,9 @@ async function executeStep(
       stopWhen: isStepCount(3),
       temperature: EXECUTION_TEMPERATURE,
       maxOutputTokens: EXECUTION_MAX_TOKENS,
+      onError: (error) => {
+        console.error(`[agent:step ${stepNum}] streamText with tools error:`, error);
+      },
       onStepFinish: ({ toolCalls: tcs, toolResults: trs }) => {
         if (tcs) {
           for (let i = 0; i < tcs.length; i++) {
@@ -525,9 +582,17 @@ async function executeStep(
     });
 
     try {
-      fullText = await result.text;
+      // Race с таймаутом — если Ollama зависнет (например, при загрузке модели),
+      // мы не блокируем агентский цикл навсегда.
+      fullText = await Promise.race([
+        result.text,
+        new Promise<string>((_, reject) =>
+          setTimeout(() => reject(new Error('streamText timeout (60s)')), 60_000)
+        ),
+      ]);
     } catch (e) {
-      console.warn(`[agent:step ${stepNum}] streamText with tools failed: ${e instanceof Error ? e.message : String(e)}. Retrying without tools.`);
+      const msg = e instanceof Error ? e.message : String(e);
+      console.warn(`[agent:step ${stepNum}] streamText with tools failed: ${msg}. Retrying without tools.`);
       fullText = '';
     }
   }
@@ -540,10 +605,18 @@ async function executeStep(
       messages,
       temperature: EXECUTION_TEMPERATURE,
       maxOutputTokens: EXECUTION_MAX_TOKENS,
+      onError: (error) => {
+        console.error(`[agent:step ${stepNum}] streamText fallback error:`, error);
+      },
     });
 
     try {
-      fullText = await result.text;
+      fullText = await Promise.race([
+        result.text,
+        new Promise<string>((_, reject) =>
+          setTimeout(() => reject(new Error('streamText timeout (60s)')), 60_000)
+        ),
+      ]);
     } catch (e) {
       fullText = `Ошибка: ${e instanceof Error ? e.message : String(e)}`;
     }
@@ -634,8 +707,19 @@ ${stepsBlock}`;
       messages: [{ role: 'user', content: userPrompt }],
       temperature: SYNTHESIS_TEMPERATURE,
       maxOutputTokens: SYNTHESIS_MAX_TOKENS,
+      onError: (error) => {
+        console.error('[agent:synthesize] streamText error:', error);
+      },
     });
-    return (await result.text).trim();
+
+    // Таймаут 90 сек — синтез может быть длинным на сложных задачах.
+    const text = await Promise.race([
+      result.text,
+      new Promise<string>((_, reject) =>
+        setTimeout(() => reject(new Error('synthesize timeout (90s)')), 90_000)
+      ),
+    ]);
+    return text.trim();
   } catch (e) {
     return `Не удалось сформулировать итоговый ответ: ${e instanceof Error ? e.message : String(e)}`;
   }

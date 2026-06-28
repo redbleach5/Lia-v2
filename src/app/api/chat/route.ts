@@ -12,7 +12,7 @@
 
 import { streamText, isStepCount, type ModelMessage } from 'ai';
 import { NextRequest, NextResponse } from 'next/server';
-import { getChatModel } from '@/lib/ollama';
+import { getChatModel, checkOllamaHealth, getOllamaSettings } from '@/lib/ollama';
 import { buildSystemPrompt } from '@/lib/system-prompt';
 import { tools } from '@/lib/tools';
 import { db } from '@/lib/db';
@@ -67,6 +67,23 @@ export async function POST(req: NextRequest) {
   const episode = await db.episode.findUnique({ where: { id: episodeId } });
   if (!episode) {
     return NextResponse.json({ error: 'episode not found' }, { status: 404 });
+  }
+
+  // ── 0. Pre-flight: Ollama availability check ──
+  // Если Ollama недоступен — сразу возвращаем понятную ошибку, а не стримим 500.
+  // Это исправляет "висящий" стрим, который ничего не отдаёт клиенту.
+  const preflightHealth = await checkOllamaHealth();
+  if (!preflightHealth.ok) {
+    return NextResponse.json({
+      error: 'Ollama недоступен. Запусти `ollama serve` или проверь URL в настройках.',
+      details: preflightHealth.error ?? 'unknown error',
+      ollamaUrl: (await getOllamaSettings()).baseUrl,
+    }, { status: 503 });
+  }
+  if (preflightHealth.models.length === 0) {
+    return NextResponse.json({
+      error: 'В Ollama нет моделей. Скачай хотя бы одну: `ollama pull qwen2.5:7b`.',
+    }, { status: 503 });
   }
 
   // ── 1. Capability profile ──
@@ -285,6 +302,11 @@ export async function POST(req: NextRequest) {
     temperature: 0.7,
     maxOutputTokens: plan.maxTokens,
     topP: 0.9,
+    onError: (error) => {
+      // Логируем ошибку стрима. Текст уже отправлен пользователю — мы не можем
+      // его отменить. Но лог поможет понять причину при разборе инцидентов.
+      console.error('[api/chat] streamText error:', error);
+    },
     onFinish: async ({ text: fullText, usage }) => {
       const durationMs = Date.now() - startTime;
 
@@ -422,7 +444,16 @@ export async function POST(req: NextRequest) {
   });
 
   // ── 11. Response with metadata in headers ──
-  // HTTP headers must be ASCII — encode non-ASCII values
+  // HTTP headers must be ASCII — values с non-ASCII символами (русский текст в
+  // эмоциях, метках RL-действий) кодируем через base64. Декодер — на клиенте.
+  const encodeHeader = (s: string): string => {
+    try {
+      return Buffer.from(s, 'utf-8').toString('base64');
+    } catch {
+      return '';
+    }
+  };
+
   return result.toTextStreamResponse({
     headers: {
       'Content-Type': 'text/plain; charset=utf-8',
@@ -430,8 +461,8 @@ export async function POST(req: NextRequest) {
       'X-Accel-Buffering': 'no',
       'X-Episode-Id': episodeId,
       'X-Message-Id': userMsg.id,
-      'X-Triggers': triggers.join(',').slice(0, 100),
-      'X-Emotion': JSON.stringify(perceivedEmotion),
+      'X-Triggers': encodeHeader(triggers.join(',').slice(0, 200)),
+      'X-Emotion': encodeHeader(JSON.stringify(perceivedEmotion)),
       'X-Tier': tier,
       'X-Complexity': complexity,
       'X-Mode': plan.mode,
@@ -439,9 +470,10 @@ export async function POST(req: NextRequest) {
       'X-Deliberate': String(plan.deliberate),
       'X-SelfCheck': String(plan.selfCheck),
       'X-ModelSize': String(profile?.modelSize ?? 0),
-      'X-Disagreement': disagreement.level,
-      'X-RL-Action': rlActionLabel || 'none',
+      'X-Disagreement': encodeHeader(disagreement.level),
+      'X-RL-Action': encodeHeader(rlActionLabel || 'none'),
       'X-RL-Confidence': rlConfidence.toFixed(2),
+      'X-Encoded': 'base64',  // сигнал клиенту, что некоторые заголовки нужно декодировать
     },
   });
 }

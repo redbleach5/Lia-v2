@@ -1,14 +1,19 @@
-// Middleware — auth + security checks for API routes.
+// Proxy (Next.js 16 — replacement for deprecated middleware) —
+// auth + security checks for API routes.
 //
 // В production: требует либо localhost-запрос, либо X-Lia-Internal header.
 // В development: пропускает всё (для удобства локальной разработки).
 //
 // Также добавляет rate limiting на критичные endpoints.
+//
+// В Next.js 16 файл middleware.ts переименован в proxy.ts, а функция
+// `middleware` — в `proxy`. Старое название работало, но вызывало deprecated
+// warning в логах и могло быть удалено в будущих версиях.
 
 import { NextRequest, NextResponse } from 'next/server';
 import { rateLimit, getClientIp } from '@/lib/rate-limit';
 
-export function middleware(req: NextRequest) {
+export function proxy(req: NextRequest) {
   // В development — пропускаем всё
   if (process.env.NODE_ENV !== 'production') {
     return NextResponse.next();

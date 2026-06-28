@@ -144,11 +144,29 @@ export function SettingsDialog() {
           embedModel: embedModel === 'auto' ? '' : embedModel,
         }),
       });
-      if (!res.ok) throw new Error('Save failed');
-      toast.success('Настройки модели сохранены');
+      // Сервер возвращает обновлённые настройки + свежий health-статус.
+      // Используем их, чтобы сразу показать пользователю результат.
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        const errMsg = (data as { error?: string }).error || `HTTP ${res.status}`;
+        throw new Error(errMsg);
+      }
+      // Обновляем settings напрямую из ответа POST — refresh() идёт за всем комплектом.
+      setSettings(s => s ? { ...s, ...data } : (data as Settings));
+      // Проверяем что Ollama ответил на health-check после смены URL.
+      if (data.ollamaOk) {
+        toast.success('Настройки сохранены. Ollama на связи.');
+      } else {
+        toast.warning(`Настройки сохранены, но Ollama не отвечает: ${data.ollamaError ?? 'unknown'}`);
+      }
+      // Всё равно делаем полный refresh чтобы обновить availableModels.
       await refresh();
-    } catch {
-      toast.error('Не удалось сохранить');
+      // Триггерим событие для OllamaBanner и других компонентов, которые
+      // слушают health-статус — они перечитают /api/health.
+      window.dispatchEvent(new CustomEvent('lia-settings-changed'));
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      toast.error(`Не удалось сохранить: ${msg}`);
     } finally {
       setSaving(false);
     }
@@ -157,15 +175,25 @@ export function SettingsDialog() {
   const saveAvatar = async () => {
     setSaving(true);
     try {
-      await fetch('/api/settings', {
+      const res = await fetch('/api/settings', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ avatarMode, activeVrm, avatarConfig }),
       });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || `HTTP ${res.status}`);
+      }
       toast.success('Настройки внешнего вида сохранены');
-      window.location.reload();
-    } catch {
-      toast.error('Не удалось сохранить');
+      // Обновляем store + AvatarColumn через refresh — без перезагрузки страницы.
+      // Раньше тут был window.location.reload() — это ломало текущий чат и эмоции.
+      await refresh();
+      // Триггерим событие для AvatarColumn и других компонентов, которые
+      // читают настройки при mount — они перечитают /api/settings.
+      window.dispatchEvent(new CustomEvent('lia-settings-changed'));
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e);
+      toast.error(`Не удалось сохранить: ${msg}`);
     } finally {
       setSaving(false);
     }

@@ -124,29 +124,36 @@ verbose() {
 # Запуск команды с замером времени и захватом вывода.
 # Использование: run_with_timing "label" command args...
 # Вывод: три строки — duration_ms, exit_code, output (может быть многострочным).
-# Чтение результата через:
-#   duration=$(echo "$result" | head -1)
-#   exit_code=$(echo "$result" | sed -n '2p')
-#   output=$(echo "$result" | tail -n +3)
+# Чтение результата через хелперы ниже.
+#
+# ВАЖНО: используем head -n1 / tail -n +3 вместо sed -n '1p' — BSD sed на macOS
+# некорректно обрабатывает многострочный ввод из переменных.
 run_with_timing() {
   local label="$1"
   shift
   local start_ms end_ms duration_ms
-  start_ms=$(date +%s%3N 2>/dev/null || python3 -c 'import time; print(int(time.time()*1000))')
+  start_ms=$(python3 -c 'import time; print(int(time.time()*1000))')
   local output
   output=$("$@" 2>&1)
   local exit_code=$?
-  end_ms=$(date +%s%3N 2>/dev/null || python3 -c 'import time; print(int(time.time()*1000))')
+  end_ms=$(python3 -c 'import time; print(int(time.time()*1000))')
   duration_ms=$((end_ms - start_ms))
-  # Три строки: duration | exit_code | output (многострочный)
+  # Три строки: duration_ms | exit_code | output (многострочный)
   printf '%s\n%s\n' "$duration_ms" "$exit_code"
   printf '%s\n' "$output"
 }
 
-# Хелперы для извлечения полей из результата run_with_timing
-get_duration() { echo "$1" | sed -n '1p'; }
-get_exit_code() { echo "$1" | sed -n '2p'; }
-get_output() { echo "$1" | tail -n +3; }
+# Хелперы для извлечения полей из результата run_with_timing.
+# Используем head/tail вместо sed — надёжнее на BSD (macOS).
+get_duration() {
+  printf '%s' "$1" | head -n 1
+}
+get_exit_code() {
+  printf '%s' "$1" | head -n 2 | tail -n 1
+}
+get_output() {
+  printf '%s' "$1" | tail -n +3
+}
 
 # ============================================================================
 # Старт
@@ -204,12 +211,20 @@ fi
 
 # Ollama
 if command -v ollama &>/dev/null; then
-  OLLAMA_VERSION=$(ollama --version 2>&1 | head -1)
-  pass "Ollama CLI: $OLLAMA_VERSION"
+  OLLAMA_VERSION_OUTPUT=$(ollama --version 2>&1)
+  # Проверяем что ollama CLI действительно работает, а не просто установлен.
+  # На macOS бывает что CLI есть, но сам ollama-сервис не запущен — тогда
+  # 'ollama --version' выдаёт "Warning: could not connect to a running Ollama instance".
+  if echo "$OLLAMA_VERSION_OUTPUT" | grep -qi "could not connect\|warning"; then
+    warn "Ollama CLI установлен, но сервис не запущен" "Запусти Ollama.app или 'ollama serve' в отдельном терминале"
+    info "Вывод ollama --version: $(echo "$OLLAMA_VERSION_OUTPUT" | head -1)"
+  else
+    pass "Ollama CLI: $(echo "$OLLAMA_VERSION_OUTPUT" | head -1)"
+  fi
 else
   warn "Ollama CLI не в PATH" "Возможно установлен в /usr/local/bin или ~/Applications"
   # Проверяем стандартные пути на macOS
-  for path in /usr/local/bin/ollama /opt/homebrew/bin/ollama "$HOME/Applications/Ollama.app/Contents/MacOS/ollama"; do
+  for path in /usr/local/bin/ollama /opt/homebrew/bin/ollama "$HOME/Applications/Ollama.app/Contents/MacOS/ollama" /Applications/Ollama.app/Contents/MacOS/ollama; do
     if [[ -x "$path" ]]; then
       info "Ollama найден в нестандартном пути: $path"
       OLLAMA_BIN="$path"
@@ -384,8 +399,45 @@ section "5. Проект и БД"
 if [[ -f "$PROJECT_ROOT/.env" ]]; then
   pass ".env найден"
   verbose "$(cat "$PROJECT_ROOT/.env" | grep -v '^#' | grep -v '^$' | head -10)"
+
+  # Проверка критичных переменных
+  ENV_CHAT_MODEL=$(grep "^OLLAMA_MODEL=" "$PROJECT_ROOT/.env" 2>/dev/null | cut -d= -f2 | tr -d ' ')
+  if [[ -z "$ENV_CHAT_MODEL" ]]; then
+    warn "OLLAMA_MODEL пустой в .env" "Будет использован default 'qwen2.5:7b' или модель из БД. Рекомендуется задать явно."
+  fi
+
+  ENV_BASE_URL=$(grep "^OLLAMA_BASE_URL=" "$PROJECT_ROOT/.env" 2>/dev/null | cut -d= -f2 | tr -d ' ')
+  if [[ -z "$ENV_BASE_URL" ]]; then
+    warn "OLLAMA_BASE_URL пустой в .env" "Будет использован default 'http://127.0.0.1:11434'"
+  fi
 else
   fail ".env не найден" "Скопируй: cp .env.example .env"
+fi
+
+# Проверка RAM — особенно важно для Mac с 8GB
+info "Проверяю оперативную память..."
+if [[ "$(uname -s)" == "Darwin" ]]; then
+  RAM_GB=$(system_profiler SPHardwareDataType 2>/dev/null | grep "Memory" | awk -F': ' '{print $2}' | grep -oE '[0-9]+' | head -1)
+  if [[ -n "$RAM_GB" ]]; then
+    info "RAM: ${RAM_GB}GB"
+    if [[ $RAM_GB -lt 8 ]]; then
+      fail "RAM ${RAM_GB}GB — слишком мало" "Нужно минимум 8GB для 3B моделей, 16GB для 7B, 32GB для 13B"
+    elif [[ $RAM_GB -lt 16 ]]; then
+      warn "RAM ${RAM_GB}GB — мало для 7B моделей" "Используй qwen2.5:3b или phi3:mini. 7B модели могут тормозить."
+    else
+      pass "RAM ${RAM_GB}GB — достаточно для большинства моделей"
+    fi
+  fi
+else
+  # Linux
+  RAM_KB=$(grep MemTotal /proc/meminfo 2>/dev/null | awk '{print $2}')
+  if [[ -n "$RAM_KB" ]]; then
+    RAM_GB=$((RAM_KB / 1024 / 1024))
+    info "RAM: ${RAM_GB}GB"
+    if [[ $RAM_GB -lt 8 ]]; then
+      warn "RAM ${RAM_GB}GB — мало для 7B моделей"
+    fi
+  fi
 fi
 
 # Проверка node_modules
@@ -495,6 +547,12 @@ fi
 # 6. Сборка проекта
 # ============================================================================
 section "6. Сборка проекта"
+
+# Удаляем .next чтобы форсировать реальную сборку, а не cached
+if [[ -d "$PROJECT_ROOT/.next" ]]; then
+  info "Очищаю кэш .next для чистой сборки..."
+  rm -rf "$PROJECT_ROOT/.next"
+fi
 
 info "Запускаю 'bun run build' (это может занять 1-2 минуты)..."
 
@@ -839,11 +897,38 @@ log ""
 if [[ $FAIL_COUNT -gt 0 ]]; then
   log "${RED}${BOLD}❌ Есть критические проблемы${NC}"
   log ""
-  log "${BOLD}Рекомендации:${NC}"
-  log "  1. Исправь все FAIL ошибки выше"
-  log "  2. Пришли лог файл: $LOG_FILE"
-  log "  3. Также приложи dev-лог: $DEV_LOG_FILE (если существует)"
-  log "  4. Укажи модель Mac и версию macOS для контекста"
+
+  # Специфичные рекомендации для Mac
+  log "${BOLD}Частые проблемы и решения:${NC}"
+  log ""
+  log "  ${BOLD}Если Ollama недоступен:${NC}"
+  log "    1. Открой приложение Ollama.app (через Spotlight или из /Applications)"
+  log "    2. Или запусти в терминале: ollama serve"
+  log "    3. Проверь что иконка Ollama появилась в строке меню macOS"
+  log "    4. После запуска Ollama — перезапусти этот скрипт"
+  log ""
+  log "  ${BOLD}Если OLLAMA_MODEL пустой в .env:${NC}"
+  log "    1. Открой .env в редакторе"
+  log "    2. Заполни: OLLAMA_MODEL=qwen2.5:3b  (для 8GB RAM)"
+  log "    3. Или: OLLAMA_MODEL=qwen2.5:7b  (для 16+GB RAM)"
+  log "    4. Скачай модель: ollama pull qwen2.5:3b"
+  log ""
+  log "  ${BOLD}Если RAM <16GB (MacBook Air/Pro M1/M2 с 8GB):${NC}"
+  log "    1. Используй лёгкие модели: qwen2.5:3b, phi3:mini, gemma2:2b"
+  log "    2. Избегай 7B+ моделей — будут OOM и таймауты"
+  log "    3. В .env увеличь LIA_LLM_TIMEOUT_MS=300000 (5 минут)"
+  log ""
+  log "  ${BOLD}Если chat/agent таймаутит:${NC}"
+  log "    1. Проверь скорость LLM: оllama run qwen2.5:3b 'hello'"
+  log "    2. Если <5 tok/s — используй модель поменьше"
+  log "    3. Увеличь LIA_LLM_TIMEOUT_MS в .env (по умолчанию 180000 = 3 мин)"
+  log "    4. Включи LOG_LEVEL=debug для детальных логов"
+  log ""
+  log "${BOLD}Что прислать для дальнейшей диагностики:${NC}"
+  log "  1. Этот лог файл: $LOG_FILE"
+  log "  2. Dev-лог: $DEV_LOG_FILE (если существует)"
+  log "  3. Вывод команды: ollama list"
+  log "  4. Скриншот окна Ollama (если есть)"
   log ""
 elif [[ $WARN_COUNT -gt 0 ]]; then
   log "${YELLOW}${BOLD}⚠ Есть предупреждения, но критических проблем нет${NC}"

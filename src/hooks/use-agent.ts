@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef } from 'react';
 import { useChatStore, type AgentTask } from '@/stores/chat-store';
+import { toast } from 'sonner';
 
 export function useAgent() {
   const setAgentTasks = useChatStore(s => s.setAgentTasks);
@@ -79,16 +80,48 @@ export function useAgent() {
 
   const provideInput = useCallback(async (id: string, answer: string) => {
     try {
-      await fetch(`/api/agent/${id}/input`, {
+      const res = await fetch(`/api/agent/${id}/input`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ answer }),
       });
+
+      if (!res.ok) {
+        // Распарсиваем ответ чтобы показать пользователю понятную ошибку.
+        // Раньше здесь просто тихо глотали ошибку — пользователь не знал,
+        // что его ответ не прошёл.
+        const err = await res.json().catch(() => ({ error: 'request failed' }));
+
+        if (res.status === 409) {
+          // waiting state lost — сервер был перезагружен
+          toast.error('Сессия ожидания потеряна. Задача помечена как failed — перезапусти её.');
+          // Обновляем store чтобы UI показал failed-статус
+          useChatStore.getState().setActiveTaskStatus('failed');
+          useChatStore.getState().setActiveTaskError(err.message || 'waiting state lost');
+          useChatStore.getState().setActiveTaskQuestion(null);
+          updateAgentTaskInList(id, {
+            status: 'failed',
+            error: err.message || 'waiting state lost',
+          });
+        } else if (res.status === 400 && err.currentStatus) {
+          // задача уже не waiting_input (например уже done или failed)
+          toast.error(`Задача уже в статусе "${err.currentStatus}". Ответ не нужен.`);
+          useChatStore.getState().setActiveTaskQuestion(null);
+        } else {
+          toast.error(`Не удалось отправить ответ: ${err.error || res.status}`);
+          console.error('[useAgent] input failed:', err);
+        }
+        return;
+      }
+
+      // Успех — убираем вопрос из UI.
       useChatStore.getState().setActiveTaskQuestion(null);
+      toast.success('Ответ отправлен, задача продолжается.');
     } catch (e) {
       console.error('[useAgent] input failed:', e);
+      toast.error(`Сетевая ошибка: ${e instanceof Error ? e.message : String(e)}`);
     }
-  }, []);
+  }, [updateAgentTaskInList]);
 
   const selectTask = useCallback((id: string) => {
     useChatStore.getState().setActiveTask(id);

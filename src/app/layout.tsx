@@ -4,8 +4,9 @@ import "./globals.css";
 import { Toaster } from "@/components/ui/sonner";
 import { logServerStartup } from "@/lib/server-startup";
 
-// Запускаем startup-лог один раз при первом server-render.
-// layout.tsx — server component, поэтому код выполняется на сервере.
+// Запускаем startup-лог один раз за процесс (globalThis flag защищает от
+// повторного вызова при HMR и множественных server-render).
+// layout.tsx — server component, код выполняется только на сервере.
 void logServerStartup().catch(() => null);
 
 const jakarta = Plus_Jakarta_Sans({

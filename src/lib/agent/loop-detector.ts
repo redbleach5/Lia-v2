@@ -6,6 +6,12 @@
 //   3. Semantic: embeddings of last 3 thoughts too similar (>0.85 cosine)
 //
 // On any signal → return true, runner should pause and ask user.
+//
+// ВАЖНО: ошибки LLM (timeout, connection refused, malformed response) НЕ считаются
+// "пустым результатом". Это инфраструктурная проблема, не цикл. Если LLM
+// таймаутит 2 раза подряд — это не значит что агент "застрял в цикле",
+// это значит что LLM слишком медленный или недоступен. В этом случае
+// детектор не срабатывает, и агент может попробовать другой шаг.
 
 import { embed } from '@/lib/ollama';
 
@@ -17,7 +23,7 @@ export type Step = {
 };
 
 const PATTERN_LIMIT = 2;       // same tool+input max 2 times
-const EMPTY_LIMIT = 2;         // 2 empty/error observations in a row → exit
+const EMPTY_LIMIT = 3;         // 3 empty observations in a row → exit (increased from 2)
 const SEMANTIC_THRESHOLD = 0.85;
 const SEMANTIC_WINDOW = 3;     // check last 3 thoughts
 
@@ -26,6 +32,26 @@ export type LoopSignal =
   | { kind: 'empty'; count: number }
   | { kind: 'semantic'; similarity: number }
   | null;
+
+// Признаки LLM-ошибок в observation — НЕ считаются "пустым результатом".
+// Это инфраструктурные ошибки, не цикл.
+const LLM_ERROR_MARKERS = [
+  'streamtext timeout',
+  'plan generation timeout',
+  'synthesize timeout',
+  'no output generated',
+  'ai_apicallerror',
+  'ai_retryerror',
+  'ai_nooutputgeneratederror',
+  'econnrefused',
+  'fetch failed',
+  'connect econnrefused',
+];
+
+function isLlmError(observation: string): boolean {
+  const lower = observation.toLowerCase();
+  return LLM_ERROR_MARKERS.some(m => lower.includes(m));
+}
 
 export function detectPatternLoop(steps: Step[]): LoopSignal {
   if (steps.length < PATTERN_LIMIT + 1) return null;
@@ -55,7 +81,15 @@ export function detectEmptyLoop(steps: Step[]): LoopSignal {
   let emptyCount = 0;
   for (const s of lastN) {
     const obs = s.observation?.trim() ?? '';
-    if (obs.length === 0 || obs.length < 20 || obs.toLowerCase().startsWith('ошибка') || obs.toLowerCase().includes('"error"')) {
+
+    // Если это LLM-ошибка (timeout, connection) — НЕ считаем пустым результатом.
+    // Это инфраструктурная проблема, не цикл.
+    if (isLlmError(obs)) {
+      // Прерываем подсчёт — LLM-ошибки не должны суммироваться с пустыми результатами.
+      return null;
+    }
+
+    if (obs.length === 0 || obs.length < 20) {
       emptyCount++;
     }
   }

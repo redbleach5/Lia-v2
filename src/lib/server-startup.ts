@@ -1,17 +1,28 @@
-// Server startup logging — запускается один раз при первом импорте в server-компоненте.
+// Server startup logging — запускается один раз при первом импорте.
 //
 // Логирует версию, окружение, ключевые пути — чтобы при отладке «зависшего» лога
 // сразу было видно: какая версия, какие настройки, какие модели доступны.
+//
+// Защита от повторного вызова: globalThis flag переживает HMR в dev-режиме.
+// Защита от клиентского вызова: проверка typeof window.
 
 import { logger } from './logger';
-import { PROJECT_ROOT } from './paths';
-import { checkOllamaHealth, getOllamaSettings } from './ollama';
 
-let startupLogged = false;
+// Глобальный flag — переживает HMR в dev-режиме.
+const globalKey = '__lia_startup_logged__';
+const g = globalThis as unknown as { [key: string]: unknown };
 
 export async function logServerStartup(): Promise<void> {
-  if (startupLogged) return;
-  startupLogged = true;
+  // На клиенте — ничего не делаем.
+  if (typeof window !== 'undefined') return;
+  if (g[globalKey]) return;
+  g[globalKey] = true;
+
+  // Динамический импорт серверных модулей — чтобы не тащить их в клиентский бандл.
+  const [{ PROJECT_ROOT }, { checkOllamaHealth, getOllamaSettings }] = await Promise.all([
+    import('./paths'),
+    import('./ollama'),
+  ]);
 
   logger.info('system', '═══════════════════════════════════════════════════════════');
   logger.info('system', 'Лия v2 — server starting', {
@@ -22,6 +33,8 @@ export async function logServerStartup(): Promise<void> {
     env: process.env.NODE_ENV ?? 'development',
     projectRoot: PROJECT_ROOT,
     logLevel: process.env.LOG_LEVEL ?? (process.env.NODE_ENV === 'production' ? 'info' : 'debug'),
+    llmTimeoutMs: process.env.LIA_LLM_TIMEOUT_MS ?? '180000 (default)',
+    synthesisTimeoutMs: process.env.LIA_LLM_SYNTHESIS_TIMEOUT_MS ?? '240000 (default)',
   });
 
   try {

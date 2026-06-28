@@ -2,6 +2,7 @@
 
 import { useChatStore } from '@/stores/chat-store';
 import { useAgent } from '@/hooks/use-agent';
+import { WorkspacePanel } from './workspace-panel';
 import {
   Rocket,
   Clock,
@@ -64,6 +65,9 @@ export function AgentPanel() {
 
       {/* Active task detail */}
       {activeTaskId && <ActiveTaskDetail />}
+
+      {/* Workspace — file browser for user to see what agent created */}
+      {activeTaskId && <WorkspacePanel taskId={activeTaskId} />}
 
       {/* Input dialog for waiting_input */}
       <WaitingInputDialog

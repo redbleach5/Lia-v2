@@ -1,0 +1,106 @@
+// GET /api/agent/[id]/workspace — file tree + content for the workspace UI.
+//
+// Returns the file tree of the agent's fsScope (if set) and optionally
+// the content of a specific file (?file=path).
+//
+// This is used by the Workspace Panel in the UI to show what files the
+// agent has created/modified in real time.
+
+import { NextRequest, NextResponse } from 'next/server';
+import { readFile, readdir, stat } from 'fs/promises';
+import { join } from 'path';
+import { getAgentTask } from '@/lib/agent/task';
+
+export const runtime = 'nodejs';
+export const dynamic = 'force-dynamic';
+
+type TreeNode = {
+  name: string;
+  path: string;
+  type: 'dir' | 'file';
+  size?: number;
+  children?: TreeNode[];
+};
+
+async function buildTree(dirPath: string, basePath: string, depth: number, maxDepth: number): Promise<TreeNode[]> {
+  if (depth >= maxDepth) return [];
+  const entries = await readdir(dirPath, { withFileTypes: true });
+  const nodes: TreeNode[] = [];
+
+  for (const entry of entries) {
+    if (entry.name.startsWith('.') || entry.name === 'node_modules' || entry.name === '__pycache__') continue;
+
+    const entryPath = join(dirPath, entry.name);
+    const relPath = entryPath.slice(basePath.length + 1).replace(/\\/g, '/');
+
+    if (entry.isDirectory()) {
+      const children = await buildTree(entryPath, basePath, depth + 1, maxDepth).catch(() => []);
+      nodes.push({ name: entry.name, path: relPath, type: 'dir', children });
+    } else if (entry.isFile()) {
+      const s = await stat(entryPath).catch(() => null);
+      nodes.push({ name: entry.name, path: relPath, type: 'file', size: s?.size });
+    }
+  }
+  return nodes;
+}
+
+export async function GET(
+  req: NextRequest,
+  { params }: { params: Promise<{ id: string }> },
+) {
+  const { id } = await params;
+
+  try {
+    const task = await getAgentTask(id);
+    if (!task) {
+      return NextResponse.json({ error: 'task not found' }, { status: 404 });
+    }
+
+    if (!task.fsScope) {
+      return NextResponse.json({
+        tree: [],
+        fileContent: null,
+        hasWorkspace: false,
+      });
+    }
+
+    // Build file tree
+    const tree = await buildTree(task.fsScope, task.fsScope, 0, 4).catch(() => []);
+
+    // Optionally get file content
+    const filePath = req.nextUrl.searchParams.get('file');
+    let fileContent: string | null = null;
+    let fileError: string | null = null;
+
+    if (filePath) {
+      // Security: prevent path traversal
+      const fullPath = join(task.fsScope, filePath);
+      const rel = fullPath.slice(task.fsScope.length);
+      if (rel.startsWith('..')) {
+        fileError = 'path traversal detected';
+      } else {
+        try {
+          const s = await stat(fullPath);
+          if (s.size > 100_000) {
+            fileError = 'file too large (max 100KB)';
+          } else {
+            fileContent = await readFile(fullPath, 'utf8');
+          }
+        } catch {
+          fileError = 'file not found';
+        }
+      }
+    }
+
+    return NextResponse.json({
+      tree,
+      fileContent,
+      fileError,
+      hasWorkspace: true,
+      fsScope: task.fsScope,
+    });
+  } catch (e) {
+    console.error('[api/agent/[id]/workspace] failed:', e);
+    return NextResponse.json({ error: 'failed' }, { status: 500 });
+  }
+}

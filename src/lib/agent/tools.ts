@@ -120,7 +120,7 @@ function makeListDirTool(task: AgentTask) {
   return tool({
     description: 'Получить список файлов и поддиректорий в указанной директории. Без аргументов — корень рабочей директории.',
     inputSchema: z.object({
-      path: z.string().optional().default('.').describe('Путь относительно рабочей директории (по умолчанию ".")'),
+      path: z.string().default('.').describe('Путь относительно рабочей директории (по умолчанию ".")'),
     }),
     execute: async ({ path }) => {
       if (!task.fsScope) {
@@ -138,6 +138,213 @@ function makeListDirTool(task: AgentTask) {
         }));
         return { path, items };
       } catch (e) {
+        return { error: e instanceof Error ? e.message : String(e) };
+      }
+    },
+  });
+}
+
+// ============================================================================
+// list_tree — рекурсивное дерево проекта (для агента)
+// ============================================================================
+function makeListTreeTool(task: AgentTask) {
+  return tool({
+    description: 'Получить рекурсивное дерево файлов рабочей директории (до 3 уровней вложенности). Показывает директории, файлы и их размеры. Полезно для обзора структуры проекта.',
+    inputSchema: z.object({
+      maxDepth: z.number().default(3).describe('Максимальная глубина вложенности (по умолч 3)'),
+    }),
+    execute: async ({ maxDepth }) => {
+      if (!task.fsScope) {
+        return { error: 'У задачи нет рабочей директории' };
+      }
+      const fullPath = await safePathWithinScope('.', task.fsScope);
+      if (!fullPath) {
+        return { error: 'Не удалось определить рабочую директорию' };
+      }
+
+      type TreeNode = { name: string; type: string; size?: number; children?: TreeNode[] };
+
+      async function buildTree(dirPath: string, depth: number): Promise<TreeNode[]> {
+        if (depth >= maxDepth) return [];
+        const entries = await readdir(dirPath, { withFileTypes: true });
+        const nodes: TreeNode[] = [];
+
+        for (const entry of entries) {
+          // Skip hidden/node_modules
+          if (entry.name.startsWith('.') || entry.name === 'node_modules' || entry.name === '__pycache__') continue;
+
+          const entryPath = join(dirPath, entry.name);
+          if (entry.isDirectory()) {
+            const children = await buildTree(entryPath, depth + 1).catch(() => []);
+            nodes.push({ name: entry.name, type: 'dir', children });
+          } else if (entry.isFile()) {
+            const s = await stat(entryPath).catch(() => null);
+            nodes.push({ name: entry.name, type: 'file', size: s?.size });
+          }
+        }
+        return nodes;
+      }
+
+      try {
+        const tree = await buildTree(fullPath, 0);
+        return { tree };
+      } catch (e) {
+        return { error: e instanceof Error ? e.message : String(e) };
+      }
+    },
+  });
+}
+
+// ============================================================================
+// edit_file — partial edit (замена строк, вставка, удаление)
+// ============================================================================
+// Это КРИТИЧЕСКИ важный инструмент для итеративной разработки.
+// Вместо перезаписи всего файла (write_file) агент может точечно изменить
+// нужные строки — экономит токены и время.
+//
+// Режимы:
+//   range  — заменить строки с startLine по endLine (включительно, 1-indexed)
+//   insert — вставить текст после указанной строки (lineNumber, 0 = в начало)
+//   delete — удалить строки с startLine по endLine
+//   regex  — заменить все совпадения regex-паттерна на replacement
+//
+// Возвращает diff (unified format) + полный контекст изменённой области.
+function makeEditFileTool(task: AgentTask) {
+  return tool({
+    description: 'Точечно изменить файл: заменить строки, вставить текст, удалить строки, или заменить по regex. НЕ перезаписывает весь файл — меняет только указанную часть. Экономит токены и время. Используй вместо write_file когда нужно изменить часть существующего файла. Возвращает diff изменений.',
+    inputSchema: z.object({
+      path: z.string().min(1).describe('Путь к файлу относительно рабочей директории'),
+      mode: z.enum(['range', 'insert', 'delete', 'regex']).describe('range: заменить строки startLine-endLine; insert: вставить после lineNumber; delete: удалить startLine-endLine; regex: заменить по паттерну'),
+      content: z.string().default('').describe('Новый текст (для range и insert) или replacement (для regex). Игнорируется для delete.'),
+      startLine: z.number().optional().describe('Начальная строка (1-indexed, включительно). Для mode=range и mode=delete.'),
+      endLine: z.number().optional().describe('Конечная строка (1-indexed, включительно). Для mode=range и mode=delete.'),
+      lineNumber: z.number().optional().describe('Строка после которой вставить (0 = в начало файла). Для mode=insert.'),
+      pattern: z.string().optional().describe('Regex паттерн для поиска. Для mode=regex.'),
+    }),
+    execute: async ({ path, mode, content, startLine, endLine, lineNumber, pattern }) => {
+      if (!task.fsScope) {
+        return { error: 'У задачи нет рабочей директории (fsScope). Редактирование файлов запрещено.' };
+      }
+      const fullPath = await safePathWithinScope(path, task.fsScope);
+      if (!fullPath) {
+        return { error: `Путь "${path}" выходит за пределы рабочей директории` };
+      }
+
+      try {
+        // Read current content
+        const oldContent = await readFile(fullPath, 'utf8');
+        const oldLines = oldContent.split('\n');
+
+        let newLines: string[];
+        let diffBefore: string[];
+        let diffAfter: string[];
+
+        if (mode === 'range') {
+          if (!startLine || !endLine || startLine < 1 || endLine < startLine || endLine > oldLines.length) {
+            return { error: `Invalid line range: start=${startLine}, end=${endLine}, file has ${oldLines.length} lines` };
+          }
+          const contentLines = content.split('\n');
+          newLines = [
+            ...oldLines.slice(0, startLine - 1),
+            ...contentLines,
+            ...oldLines.slice(endLine),
+          ];
+          const ctxStart = Math.max(0, startLine - 3);
+          const ctxEnd = Math.min(oldLines.length, endLine + 3);
+          diffBefore = oldLines.slice(ctxStart, ctxEnd).map((l, i) => `  ${ctxStart + i + 1}: ${l}`);
+          diffAfter = newLines.slice(ctxStart, ctxStart + contentLines.length + 6).map((l, i) => {
+            const lineNum = ctxStart + i + 1;
+            const isChanged = lineNum >= startLine && lineNum <= startLine + contentLines.length - 1;
+            return `${isChanged ? '+' : ' '} ${lineNum}: ${l}`;
+          });
+
+        } else if (mode === 'insert') {
+          const lineNum = lineNumber ?? 0;
+          if (lineNum < 0 || lineNum > oldLines.length) {
+            return { error: `Invalid lineNumber: ${lineNum}, file has ${oldLines.length} lines` };
+          }
+          const contentLines = content.split('\n');
+          newLines = [
+            ...oldLines.slice(0, lineNum),
+            ...contentLines,
+            ...oldLines.slice(lineNum),
+          ];
+          const ctxStart = Math.max(0, lineNum - 2);
+          const ctxEnd = Math.min(newLines.length, lineNum + contentLines.length + 2);
+          diffBefore = oldLines.slice(ctxStart, Math.min(oldLines.length, lineNum + 2)).map((l, i) => `  ${ctxStart + i + 1}: ${l}`);
+          diffAfter = newLines.slice(ctxStart, ctxEnd).map((l, i) => {
+            const ln = ctxStart + i + 1;
+            const isInserted = ln > lineNum && ln <= lineNum + contentLines.length;
+            return `${isInserted ? '+' : ' '} ${ln}: ${l}`;
+          });
+
+        } else if (mode === 'delete') {
+          if (!startLine || !endLine || startLine < 1 || endLine < startLine || endLine > oldLines.length) {
+            return { error: `Invalid line range: start=${startLine}, end=${endLine}, file has ${oldLines.length} lines` };
+          }
+          newLines = [
+            ...oldLines.slice(0, startLine - 1),
+            ...oldLines.slice(endLine),
+          ];
+          const ctxStart = Math.max(0, startLine - 3);
+          const ctxEnd = Math.min(oldLines.length, endLine + 3);
+          diffBefore = oldLines.slice(ctxStart, ctxEnd).map((l, i) => `  ${ctxStart + i + 1}: ${l}`);
+          diffAfter = newLines.slice(ctxStart, Math.min(newLines.length, ctxStart + (endLine - startLine + 1) + 3)).map((l, i) => `- ${ctxStart + i + 1}: [deleted]`);
+
+        } else if (mode === 'regex') {
+          if (!pattern) {
+            return { error: 'pattern is required for regex mode' };
+          }
+          const regex = new RegExp(pattern, 'g');
+          const newContent = oldContent.replace(regex, content);
+          if (newContent === oldContent) {
+            return { error: 'No matches found for pattern' };
+          }
+          newLines = newContent.split('\n');
+          // Find first changed line for diff
+          let firstChange = 0;
+          for (let i = 0; i < Math.min(oldLines.length, newLines.length); i++) {
+            if (oldLines[i] !== newLines[i]) { firstChange = i; break; }
+          }
+          const ctxStart = Math.max(0, firstChange - 2);
+          diffBefore = oldLines.slice(ctxStart, ctxStart + 5).map((l, i) => `  ${ctxStart + i + 1}: ${l}`);
+          diffAfter = newLines.slice(ctxStart, ctxStart + 5).map((l, i) => {
+            const isChanged = oldLines[ctxStart + i] !== l;
+            return `${isChanged ? '+' : ' '} ${ctxStart + i + 1}: ${l}`;
+          });
+
+        } else {
+          return { error: `Unknown mode: ${mode}` };
+        }
+
+        // Write new content
+        await writeFile(fullPath, newLines.join('\n'), 'utf8');
+
+        // Emit event for workspace UI
+        emitAgentEvent({
+          type: 'tool_end',
+          taskId: task.id,
+          step: task.currentStep,
+          tool: 'edit_file',
+          success: true,
+          output: { path, mode, linesChanged: oldLines.length - newLines.length },
+          ts: Date.now(),
+        });
+
+        return {
+          path,
+          mode,
+          oldLineCount: oldLines.length,
+          newLineCount: newLines.length,
+          diff: [...diffBefore, '---', ...diffAfter].join('\n'),
+          success: true,
+        };
+      } catch (e) {
+        // File doesn't exist — for range/insert/regex modes, can't edit non-existent file
+        const err = e as NodeJS.ErrnoException;
+        if (err.code === 'ENOENT') {
+          return { error: `File not found: ${path}. Use write_file to create new files.` };
+        }
         return { error: e instanceof Error ? e.message : String(e) };
       }
     },
@@ -604,7 +811,9 @@ export function buildAgentTools(task: AgentTask): ToolSet {
     }),
     read_file: makeReadFileTool(task),
     write_file: makeWriteFileTool(task),
+    edit_file: makeEditFileTool(task),
     list_dir: makeListDirTool(task),
+    list_tree: makeListTreeTool(task),
     file_search: makeFileSearchTool(task),
     http_request: makeHttpRequestTool(),
     fetch_page: makeFetchPageTool(),

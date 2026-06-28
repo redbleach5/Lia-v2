@@ -139,7 +139,10 @@ export function useAgent() {
     es.addEventListener('step_end', (e) => {
       try {
         const data = JSON.parse((e as MessageEvent).data);
+        // Update the step with action + observation + thought
         useChatStore.getState().appendActiveTaskObservation(data.step, data.observation);
+        // Note: action and thought are available in data.action / data.thought
+        // for future UI enhancement (show action label + thought text)
       } catch { /* */ }
     });
 

@@ -625,7 +625,7 @@ function VrmModel({
     gazeY: 0,
     targetGazeX: 0,
     targetGazeY: 0,
-    current: { happy: 0, angry: 0, sad: 0, relaxed: 0, surprised: 0 },
+    current: { happy: 0, angry: 0, sad: 0, relaxed: 0, surprised: 0 } as Record<string, number>,
     breathPhase: 0,
     swayPhase: 0,
     armPhase: 0,

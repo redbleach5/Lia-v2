@@ -27,7 +27,7 @@ export type AgentEvent =
   | { type: 'task_planning'; taskId: string; ts: number }
   | { type: 'task_plan_ready'; taskId: string; plan: { goal: string; steps: string[]; complexity: string }; ts: number }
   | { type: 'step_start'; taskId: string; step: number; maxSteps: number; thought: string; ts: number }
-  | { type: 'step_end'; taskId: string; step: number; action: string; observation: string; durationMs: number; ts: number }
+  | { type: 'step_end'; taskId: string; step: number; action: string; observation: string; thought: string; durationMs: number; ts: number }
   | { type: 'tool_start'; taskId: string; step: number; tool: string; input: unknown; ts: number }
   | { type: 'tool_end'; taskId: string; step: number; tool: string; success: boolean; output: unknown; ts: number }
   | { type: 'task_waiting_input'; taskId: string; question: string; ts: number }

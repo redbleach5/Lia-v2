@@ -1,7 +1,8 @@
 // Agent-specific tools — используются только в agent mode.
 //
 // Это расширяет базовый tools registry (web_search, save_artifact) инструментами
-// для полноценной автономной работы: чтение/запись файлов, HTTP, ask_user, sub-agents.
+// для полноценной автономной работы: чтение/запись файлов, HTTP, ask_user, sub-agents,
+// выполнение кода, чтение веб-страниц.
 //
 // Все FS-операции ограничены fsScope задачи (path prefix). Без fsScope — отказ.
 
@@ -10,7 +11,8 @@ import { z } from 'zod';
 import { readFile, writeFile, readdir, stat, mkdir, realpath } from 'fs/promises';
 import { join, resolve, relative, isAbsolute } from 'path';
 import { saveArtifact } from '../tools/save-artifact';
-import { webSearch } from '../tools/web-search';
+import { webSearch, fetchPage } from '../tools/web-search';
+import { runCode } from '../tools/code-run';
 import type { AgentTask } from './task';
 import {
   emitAgentEvent,
@@ -529,6 +531,48 @@ function makeSpawnSubagentTool(task: AgentTask) {
 }
 
 // ============================================================================
+// code_run — выполнение кода в sandbox (Python/JavaScript)
+// ============================================================================
+function makeCodeRunTool() {
+  return tool({
+    description: 'Выполнить код (Python или JavaScript) в sandbox. Полезно для: проверки кода перед сохранением, вычислений, тестирования гипотез, парсинга данных. Код выполняется с таймаутом 30 сек, без сетевого доступа, в изолированной temp-директории. Возвращает stdout + stderr.',
+    inputSchema: z.object({
+      language: z.enum(['python', 'javascript']).default('python').describe('Язык программирования'),
+      code: z.string().min(1).describe('Код для выполнения'),
+    }),
+    execute: async ({ language, code }) => {
+      const result = await runCode(code, language);
+      return {
+        language,
+        stdout: result.stdout,
+        stderr: result.stderr,
+        exitCode: result.exitCode,
+        durationMs: result.durationMs,
+        truncated: result.truncated,
+        success: result.exitCode === 0,
+      };
+    },
+  });
+}
+
+// ============================================================================
+// fetch_page — чтение содержимого веб-страницы
+// ============================================================================
+function makeFetchPageTool() {
+  return tool({
+    description: 'Загрузить веб-страницу и извлечь читаемый текст (API-документация, туториалы, примеры кода). Удаляет HTML-теги, скрипты, навигацию. Возвращает до 5000 символов чистого текста с сохранением структуры (заголовки, параграфы, блоки кода). Используй ПОСЛЕ web_search для чтения конкретных страниц из результатов.',
+    inputSchema: z.object({
+      url: z.string().url().describe('Полный URL страницы для чтения'),
+      maxChars: z.number().default(5000).describe('Максимум символов текста (по умолч 5000)'),
+    }),
+    execute: async ({ url, maxChars }) => {
+      const result = await fetchPage(url, maxChars);
+      return result;
+    },
+  });
+}
+
+// ============================================================================
 // Build tool registry for a specific task
 // ============================================================================
 export function buildAgentTools(task: AgentTask): ToolSet {
@@ -563,6 +607,8 @@ export function buildAgentTools(task: AgentTask): ToolSet {
     list_dir: makeListDirTool(task),
     file_search: makeFileSearchTool(task),
     http_request: makeHttpRequestTool(),
+    fetch_page: makeFetchPageTool(),
+    code_run: makeCodeRunTool(),
     ask_user: makeAskUserTool(task),
     spawn_subagent: makeSpawnSubagentTool(task),
   };

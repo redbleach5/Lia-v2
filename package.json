@@ -12,6 +12,8 @@
     "logs:tail": "tail -f dev.log",
     "logs:agent": "grep -E '\\[agent\\]|\\[tools\\]' dev.log | tail -100",
     "logs:errors": "grep -E '\\[ERROR\\]' dev.log | tail -50",
+    "diagnose": "bash scripts/diagnose.sh",
+    "diagnose:verbose": "bash scripts/diagnose.sh --verbose",
     "db:push": "bash scripts/db-init.sh",
     "db:force-push": "rm -f db/custom.db* && prisma db push",
     "db:generate": "prisma generate",

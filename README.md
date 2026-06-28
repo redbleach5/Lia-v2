@@ -257,6 +257,45 @@ Python sidecar (FastAPI + PyTorch) обучает policy network через PPO 
 - **python-sidecar/README.md** — документация RL sidecar
 - **prisma/schema.prisma** — комментарии к каждой таблице
 
+## Диагностика проблем
+
+Если что-то не работает — запусти скрипт полной диагностики:
+
+```bash
+bun run diagnose
+# или
+bash scripts/diagnose.sh
+```
+
+Скрипт проверяет:
+1. Окружение (Node, Bun, Ollama, Python, git, curl)
+2. Ollama (доступность, модели, время отклика)
+3. LLM генерацию (тестовый промпт, скорость токенов/сек)
+4. Embedding (размерность, скорость)
+5. БД (Prisma, sqlite-vec, права на запись)
+6. Сборку проекта
+7. Dev-сервер и ключевые API endpoints
+8. Chat API (стриминг, время ответа)
+9. Agent API (создание задачи, выполнение, SSE)
+10. VRM аватар (файлы, доступность)
+
+Лог сохраняется в `diagnose-YYYYMMDD-HHMMSS.log` — приложи его к сообщению
+об ошибке для быстрой диагностики.
+
+Для детального лога:
+```bash
+bun run diagnose:verbose
+```
+
+## Отправка баг-репорта
+
+При проблемах приложи:
+1. **Лог диагностики**: `diagnose-*.log` (из последнего запуска `bun run diagnose`)
+2. **Dev-лог**: `dev.log` (или `diagnose-dev.log`)
+3. **Модель Mac**: `system_profiler SPHardwareDataType | grep -E "Model|Chip|Memory"`
+4. **Версия macOS**: `sw_vers`
+5. **Шаги воспроизведения**: что делал, что ожидал, что получилось
+
 ## Лицензия
 
 Приватный проект. © 2026

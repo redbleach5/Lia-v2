@@ -69,3 +69,7 @@ python-sidecar/**/*.pyc
 .vscode/
 *.swp
 *.swo
+
+# Diagnostics
+diagnose-*.log
+diagnose-dev.log

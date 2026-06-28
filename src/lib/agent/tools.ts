@@ -14,6 +14,7 @@ import { saveArtifact } from '../tools/save-artifact';
 import { webSearch, fetchPage } from '../tools/web-search';
 import { runCode } from '../tools/code-run';
 import type { AgentTask } from './task';
+import { getTemplate, type AgentTemplateName } from './templates';
 import {
   emitAgentEvent,
   setWaiting,
@@ -618,58 +619,55 @@ function makeFileSearchTool(task: AgentTask) {
 }
 
 // ============================================================================
-// spawn_subagent — породить подзадачу и дождаться её результата.
+// spawn_subagent — породить подзадачу с шаблоном и дождаться результата.
 //
-// Реализация: создаёт дочернюю AgentTask с parentTaskId, запускает
-// runAgentTask (синхронно ждёт завершения), возвращает resultSummary.
+// Параметр template определяет роль под-агента (researcher, coder, etc.):
+//   - systemPrompt из шаблона заменяет стандартный промпт runner'а
+//   - toolWhitelist из шаблона ограничивает доступные инструменты
+//   - maxSteps / maxDurationSec из шаблона
 //
-// Ограничения:
-//   - Под-агент выполняется последовательно (не параллельно) — текущий шаг
-//     блокируется до завершения под-агента.
-//   - Под-агент наследует episodeId и fsScope от родителя.
-//   - maxSteps для под-агента = 8 (меньше, чем у корневого, чтобы избежать
-//     бесконечной рекурсии).
-//   - Глубина рекурсии ограничена 2 (под-агент не может породить под-агента).
+// Глубина рекурсии:
+//   Level 0 (root) → может spawn
+//   Level 1 (specialist) → может spawn если template.canSpawnSubagents
+//   Level 2 (sub-specialist) → НЕ может spawn
 // ============================================================================
 function makeSpawnSubagentTool(task: AgentTask) {
   return tool({
-    description: 'Породить под-агента для автономной подзадачи. Под-агент выполнит задачу самостоятельно и вернёт результат. Используй когда подзадача требует нескольких шагов (поиск + анализ, чтение нескольких файлов и т.п.). НЕ используй для простых действий — делай их сам.',
+    description: 'Породить под-агента для автономной подзадачи. Под-агент выполнит задачу самостоятельно и вернёт результат. Выбери подходящий template: researcher (поиск информации), coder (написание кода), reviewer (проверка кода), tester (тестирование), writer (документация), planner (делегирование). Используй spawn_subagents для параллельных задач.',
     inputSchema: z.object({
       goal: z.string().min(1).describe('Чёткая формулировка подзадачи для под-агента'),
-      tools: z.array(z.string()).default([]).describe('Список инструментов для под-агента (по умолчанию все)'),
+      template: z.enum(['general', 'planner', 'researcher', 'coder', 'reviewer', 'tester', 'writer']).default('general').describe('Роль под-агента (определяет промпт, инструменты и лимиты)'),
     }),
-    execute: async ({ goal, tools: toolWhitelist }) => {
-      // Проверяем глубину рекурсии — под-агент не может породить под-агента.
-      // Это предотвращает бесконечную рекурсию.
+    execute: async ({ goal, template: templateName }) => {
+      const template = getTemplate(templateName);
+
+      // Проверяем глубину рекурсии
       if (task.parentTaskId !== null) {
         return {
-          error: 'Достигнута максимальная глубина под-агентов (1 уровень). Выполняйте подзадачу последовательно в рамках текущего агента.',
+          error: 'Достигнута максимальная глубина под-агентов (2 уровня). Выполняйте подзадачу последовательно.',
           goal,
         };
       }
 
       try {
-        // Импортируем здесь чтобы избежать circular dependency
-        // (runner.ts импортирует tools.ts через buildAgentTools)
         const { createAgentTask } = await import('./task');
         const { runAgentTask } = await import('./runner');
-        const { getAgentTask } = await import('./task');
+        const { getAgentTask, cancelAgentTask } = await import('./task');
 
-        // Создаём дочернюю задачу
         const subTask = await createAgentTask({
           episodeId: task.episodeId,
-          goal,
+          goal: template.systemPrompt
+            ? `${template.systemPrompt}\n\n## ЗАДАЧА\n${goal}`
+            : goal,
           parentTaskId: task.id,
-          toolsWhitelist: toolWhitelist && toolWhitelist.length > 0 ? toolWhitelist : null,
+          toolsWhitelist: template.toolWhitelist,
           fsScope: task.fsScope,
-          maxSteps: 8,  // меньше, чем у корневого
-          maxDurationSec: Math.min(300, task.maxDurationSec),  // максимум 5 мин
+          maxSteps: Math.min(template.maxSteps, task.maxSteps),
+          maxDurationSec: Math.min(template.maxDurationSec, task.maxDurationSec),
         });
 
-        // Запускаем sub-agent с timeout — если sub-agent входит в waiting_input
-        // (задаёт вопрос пользователю), родитель не должен блокировать навсегда.
-        // Таймаут = maxDurationSec под-агента + 30 сек запас.
-        const subTimeoutMs = Math.min(300, task.maxDurationSec) * 1000 + 30_000;
+        // Timeout
+        const subTimeoutMs = template.maxDurationSec * 1000 + 30_000;
         let timedOut = false;
 
         await Promise.race([
@@ -677,52 +675,43 @@ function makeSpawnSubagentTool(task: AgentTask) {
           new Promise<void>((_, reject) =>
             setTimeout(() => {
               timedOut = true;
-              reject(new Error(`Под-агент превысил лимит времени (${subTimeoutMs / 1000} сек)`));
-            }, subTimeoutMs),
+              reject(new Error(`timeout: ${subTimeoutMs / 1000}s`));
+            }, subTimeoutMs).unref?.(),
           ),
         ]).catch(e => {
-          if (!timedOut) throw e;  // реальная ошибка, не таймаут
-          console.warn(`[spawn_subagent] timed out after ${subTimeoutMs}ms`);
+          if (!timedOut) throw e;
         });
 
-        // Получаем результат
         const completed = await getAgentTask(subTask.id);
 
         if (!completed) {
           return { error: 'Под-агент завершился без результата', goal, subTaskId: subTask.id };
         }
 
-        // Если таймаут — задача может быть ещё в transient-статусе
         if (timedOut && ['planning', 'executing', 'waiting_input', 'synthesizing'].includes(completed.status)) {
-          // Помечаем как failed чтобы не висела
-          const { cancelAgentTask } = await import('./task');
           await cancelAgentTask(subTask.id);
           return {
-            error: `Под-агент не уложился в ${subTimeoutMs / 1000} сек. Возможно, он ждал ввода от пользователя. Задача отменена.`,
-            goal,
-            subTaskId: subTask.id,
+            error: `Под-агент не уложился в ${subTimeoutMs / 1000} сек. Задача отменена.`,
+            goal, subTaskId: subTask.id, template: template.name,
           };
         }
 
         if (completed.status === 'failed') {
           return {
-            error: `Под-агент не смог выполнить задачу: ${completed.error ?? 'неизвестная ошибка'}`,
-            goal,
-            subTaskId: subTask.id,
+            error: `Под-агент (${template.label}) не смог выполнить задачу: ${completed.error ?? 'неизвестная ошибка'}`,
+            goal, subTaskId: subTask.id, template: template.name,
           };
         }
 
         if (completed.status === 'cancelled') {
-          return {
-            error: 'Под-агент был отменён',
-            goal,
-            subTaskId: subTask.id,
-          };
+          return { error: 'Под-агент был отменён', goal, subTaskId: subTask.id, template: template.name };
         }
 
         return {
           goal,
           subTaskId: subTask.id,
+          template: template.name,
+          templateLabel: template.label,
           status: completed.status,
           result: completed.resultSummary ?? '(под-агент не вернул результат)',
           stepsCount: completed.currentStep,
@@ -731,6 +720,130 @@ function makeSpawnSubagentTool(task: AgentTask) {
         return {
           error: `Не удалось запустить под-агента: ${e instanceof Error ? e.message : String(e)}`,
           goal,
+        };
+      }
+    },
+  });
+}
+
+// ============================================================================
+// spawn_subagents — параллельный запуск нескольких под-агентов.
+//
+// Создаёт N дочерних задач, запускает их ОДНОВРЕМЕННО через Promise.all,
+// ждёт завершения всех, возвращает массив результатов.
+//
+// Используется planner'ом для независимых подзадач:
+//   "Изучи ЮKassa API" + "Изучи Telegram API" → параллельно (2x быстрее)
+// ============================================================================
+function makeSpawnSubagentsTool(task: AgentTask) {
+  return tool({
+    description: 'Запустить НЕСКОЛЬКО под-агентов ПАРАЛЛЕЛЬНО. Каждый выполнит свою задачу одновременно с другими. Возвращает массив результатов. Используй для независимых подзадач (например: изучить два разных API параллельно). НЕ используй если задачи зависят друг от друга — тогда используй spawn_subagent последовательно.',
+    inputSchema: z.object({
+      tasks: z.array(z.object({
+        goal: z.string().min(1).describe('Чёткая формулировка подзадачи'),
+        template: z.enum(['general', 'planner', 'researcher', 'coder', 'reviewer', 'tester', 'writer']).default('general').describe('Роль под-агента'),
+      })).min(1).max(5).describe('Массив подзадач (максимум 5 для параллельного выполнения)'),
+    }),
+    execute: async ({ tasks: subtasks }) => {
+      // Проверяем глубину рекурсии
+      if (task.parentTaskId !== null) {
+        return {
+          error: 'Достигнута максимальная глубина под-агентов (2 уровня).',
+          tasks: subtasks,
+        };
+      }
+
+      // Лимит параллельности — не более 5 одновременно
+      const limited = subtasks.slice(0, 5);
+
+      try {
+        const { createAgentTask } = await import('./task');
+        const { runAgentTask } = await import('./runner');
+        const { getAgentTask, cancelAgentTask } = await import('./task');
+
+        // Создаём все дочерние задачи
+        const createdTasks = await Promise.all(
+          limited.map(async (sub) => {
+            const template = getTemplate(sub.template);
+            const subTask = await createAgentTask({
+              episodeId: task.episodeId,
+              goal: template.systemPrompt
+                ? `${template.systemPrompt}\n\n## ЗАДАЧА\n${sub.goal}`
+                : sub.goal,
+              parentTaskId: task.id,
+              toolsWhitelist: template.toolWhitelist,
+              fsScope: task.fsScope,
+              maxSteps: Math.min(template.maxSteps, task.maxSteps),
+              maxDurationSec: Math.min(template.maxDurationSec, task.maxDurationSec),
+            });
+            return { subTask, template, originalGoal: sub.goal };
+          }),
+        );
+
+        // Запускаем ВСЕ параллельно с общим таймаутом
+        const maxTimeout = Math.max(...createdTasks.map(c => c.template.maxDurationSec)) * 1000 + 30_000;
+        let timedOut = false;
+
+        const results = await Promise.allSettled(
+          createdTasks.map(async ({ subTask }) => {
+            return Promise.race([
+              runAgentTask(subTask.id),
+              new Promise<void>((_, reject) =>
+                setTimeout(() => {
+                  timedOut = true;
+                  reject(new Error(`timeout: ${maxTimeout / 1000}s`));
+                }, maxTimeout).unref?.(),
+              ),
+            ]).catch(e => {
+              if (!timedOut) throw e;
+            });
+          }),
+        );
+
+        // Собираем результаты
+        const summaries = await Promise.all(
+          createdTasks.map(async ({ subTask, template, originalGoal }, i) => {
+            const completed = await getAgentTask(subTask.id);
+
+            // Если таймаут — отменяем
+            if (timedOut && completed && ['planning', 'executing', 'waiting_input', 'synthesizing'].includes(completed.status)) {
+              await cancelAgentTask(subTask.id).catch(() => null);
+              return {
+                goal: originalGoal,
+                template: template.name,
+                subTaskId: subTask.id,
+                status: 'timeout',
+                result: `Под-агент не уложился в ${maxTimeout / 1000} сек`,
+              };
+            }
+
+            if (!completed) {
+              return { goal: originalGoal, template: template.name, subTaskId: subTask.id, status: 'error', result: 'Нет результата' };
+            }
+
+            return {
+              goal: originalGoal,
+              template: template.name,
+              templateLabel: template.label,
+              subTaskId: subTask.id,
+              status: completed.status,
+              result: completed.resultSummary ?? '(нет результата)',
+              error: completed.error,
+              stepsCount: completed.currentStep,
+            };
+          }),
+        );
+
+        return {
+          totalTasks: limited.length,
+          completed: summaries.filter(s => s.status === 'done').length,
+          failed: summaries.filter(s => s.status !== 'done').length,
+          results: summaries,
+        };
+      } catch (e) {
+        return {
+          error: `Параллельный запуск не удался: ${e instanceof Error ? e.message : String(e)}`,
+          tasks: limited,
         };
       }
     },
@@ -820,6 +933,7 @@ export function buildAgentTools(task: AgentTask): ToolSet {
     code_run: makeCodeRunTool(),
     ask_user: makeAskUserTool(task),
     spawn_subagent: makeSpawnSubagentTool(task),
+    spawn_subagents: makeSpawnSubagentsTool(task),
   };
 
   // Apply whitelist if set

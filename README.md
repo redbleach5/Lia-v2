@@ -118,12 +118,6 @@ npx next dev -p 3000 --webpack
 
 В настройках приложения: **Настройки → Внешний вид → Скачать готовую** (одной кнопкой).
 
-Или через терминал:
-
-```bash
-bash scripts/download-vrm.sh
-```
-
 Без этого автоматически переключится на Live2D-стилизованный аватар.
 
 ### 7. (Опционально) Запустить движок обучения
@@ -292,8 +286,6 @@ Python sidecar (FastAPI + PyTorch) обучает policy network через PPO 
 ## Документация
 
 - **README.md** (этот файл) — quickstart, архитектура, roadmap
-- **download/lia-v2-design.md** — полный design doc с обоснованием решений
-- **download/LIA_diagnosis.md** — анализ багов LIA v1 (почему переписывали)
 - **python-sidecar/README.md** — документация RL sidecar
 - **prisma/schema.prisma** — комментарии к каждой таблице
 

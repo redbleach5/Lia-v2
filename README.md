@@ -36,16 +36,36 @@
 
 ### 1. Установить зависимости
 
+**macOS / Linux:**
 ```bash
 bun install
+```
+
+**Windows (PowerShell):**
+```powershell
+bun install
+# или если bun не установлен:
+npm install
 ```
 
 ### 2. Установить и запустить Ollama
 
 Скачай с https://ollama.com, затем:
 
+**macOS / Linux:**
 ```bash
 ollama serve          # в одном терминале
+ollama pull qwen2.5:7b
+ollama pull nomic-embed-text
+```
+
+**Windows:**
+```powershell
+# Открой Ollama из Start Menu (Пуск → Ollama)
+# Или в PowerShell:
+ollama serve
+
+# В другом окне PowerShell:
 ollama pull qwen2.5:7b
 ollama pull nomic-embed-text
 ```
@@ -54,22 +74,42 @@ ollama pull nomic-embed-text
 
 ### 3. Настроить окружение
 
+**macOS / Linux:**
 ```bash
 cp .env.example .env
+```
+
+**Windows (PowerShell):**
+```powershell
+Copy-Item .env.example .env
 ```
 
 По умолчанию `.env` использует относительные пути — работает на macOS, Windows, Linux без правок.
 
 ### 4. Инициализировать БД
 
+**macOS / Linux:**
 ```bash
 bun run db:push
 ```
 
+**Windows:**
+```powershell
+bun run db:push:win
+```
+
 ### 5. Запустить dev-сервер
 
+**macOS / Linux:**
 ```bash
 bun run dev
+```
+
+**Windows:**
+```powershell
+bun run dev:win
+# или без логирования в файл:
+npx next dev -p 3000 --webpack
 ```
 
 Открой http://localhost:3000
@@ -261,39 +301,68 @@ Python sidecar (FastAPI + PyTorch) обучает policy network через PPO 
 
 Если что-то не работает — запусти скрипт полной диагностики:
 
+### macOS / Linux
+
 ```bash
 bun run diagnose
 # или
 bash scripts/diagnose.sh
 ```
 
+### Windows (PowerShell нативно, без WSL)
+
+```powershell
+# В PowerShell:
+bun run diagnose:win
+
+# Или напрямую:
+powershell -ExecutionPolicy Bypass -File scripts\diagnose.ps1
+
+# С детализацией:
+powershell -ExecutionPolicy Bypass -File scripts\diagnose.ps1 -Verbose
+```
+
+Если PowerShell блокирует запуск скрипта:
+```powershell
+Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+.\scripts\diagnose.ps1
+```
+
 Скрипт проверяет:
 1. Окружение (Node, Bun, Ollama, Python, git, curl)
-2. Ollama (доступность, модели, время отклика)
-3. LLM генерацию (тестовый промпт, скорость токенов/сек)
-4. Embedding (размерность, скорость)
-5. БД (Prisma, sqlite-vec, права на запись)
-6. Сборку проекта
-7. Dev-сервер и ключевые API endpoints
-8. Chat API (стриминг, время ответа)
-9. Agent API (создание задачи, выполнение, SSE)
-10. VRM аватар (файлы, доступность)
+2. GPU (NVIDIA карта, VRAM, драйвер) — **Windows версия дополнительно**
+3. Ollama (доступность, модели, время отклика)
+4. LLM генерацию (тестовый промпт, скорость токенов/сек)
+5. Embedding (размерность, скорость)
+6. БД (Prisma, sqlite-vec, права на запись)
+7. Сборку проекта
+8. Dev-сервер и ключевые API endpoints
+9. Chat API (стриминг, время ответа)
+10. Agent API (создание задачи, выполнение, SSE)
+11. VRM аватар (файлы, доступность)
 
 Лог сохраняется в `diagnose-YYYYMMDD-HHMMSS.log` — приложи его к сообщению
 об ошибке для быстрой диагностики.
 
-Для детального лога:
-```bash
-bun run diagnose:verbose
-```
+## Команды для Windows
+
+| Действие | macOS/Linux | Windows (PowerShell) |
+|---|---|---|
+| Dev-сервер | `bun run dev` | `bun run dev:win` |
+| Сборка | `bun run build` | `bun run build:win` |
+| Инициализация БД | `bun run db:push` | `bun run db:push:win` |
+| Диагностика | `bun run diagnose` | `bun run diagnose:win` |
+| Логи real-time | `bun run logs:tail` | `bun run logs:tail:win` |
+| Логи агента | `bun run logs:agent` | `bun run logs:agent:win` |
+| Логи ошибок | `bun run logs:errors` | `bun run logs:errors:win` |
 
 ## Отправка баг-репорта
 
 При проблемах приложи:
-1. **Лог диагностики**: `diagnose-*.log` (из последнего запуска `bun run diagnose`)
+1. **Лог диагностики**: `diagnose-*.log` (из последнего запуска `bun run diagnose` или `bun run diagnose:win`)
 2. **Dev-лог**: `dev.log` (или `diagnose-dev.log`)
-3. **Модель Mac**: `system_profiler SPHardwareDataType | grep -E "Model|Chip|Memory"`
-4. **Версия macOS**: `sw_vers`
+3. **GPU информация** (Windows): `nvidia-smi`
+4. **Модели Ollama**: `ollama list`
 5. **Шаги воспроизведения**: что делал, что ожидал, что получилось
 
 ## Лицензия

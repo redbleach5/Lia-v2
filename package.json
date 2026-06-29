@@ -18,7 +18,17 @@
     "db:force-push": "rm -f db/custom.db* && prisma db push",
     "db:generate": "prisma generate",
     "db:migrate": "prisma migrate dev",
-    "db:reset": "prisma migrate reset"
+    "db:reset": "prisma migrate reset",
+    "dev:win": "powershell -Command \"next dev -p 3000 --webpack 2>&1 | Tee-Object -FilePath dev.log\"",
+    "build:win": "next build",
+    "start:win": "powershell -Command \"$env:NODE_ENV='production'; bun .next/standalone/server.js 2>&1 | Tee-Object -FilePath server.log\"",
+    "logs:tail:win": "powershell -Command \"Get-Content dev.log -Wait -Tail 20\"",
+    "logs:agent:win": "powershell -Command \"Select-String -Path dev.log -Pattern '\\[agent\\]|\\[tools\\]' | Select-Object -Last 100\"",
+    "logs:errors:win": "powershell -Command \"Select-String -Path dev.log -Pattern '\\[ERROR\\]' | Select-Object -Last 50\"",
+    "diagnose:win": "powershell -ExecutionPolicy Bypass -File scripts/diagnose.ps1",
+    "diagnose:win:verbose": "powershell -ExecutionPolicy Bypass -File scripts/diagnose.ps1 -Verbose",
+    "db:push:win": "powershell -ExecutionPolicy Bypass -File scripts/db-init.ps1",
+    "db:force-push:win": "powershell -Command \"Remove-Item -Force db/custom.db*; bunx prisma db push\""
   },
   "dependencies": {
     "@ai-sdk/openai-compatible": "^3.0.0",

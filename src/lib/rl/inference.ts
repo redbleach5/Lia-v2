@@ -64,7 +64,14 @@ async function ensureSession(version: number | null = null): Promise<boolean> {
 
   const resolved = resolveOnnxPath(version);
   if (!resolved) {
-    logger.warn('rl', 'No ONNX model found in', {}, SIDECAR_MODELS_DIR);
+    // Это ожидаемая ситуация: ONNX модель не обучена, пока Python sidecar
+    // ни разу не запускали. Fallback heuristic будет использован — это нормально.
+    // Логируем как debug без stack trace, чтобы не засорять логи на каждый чат.
+    // (Раньше был warn с полным stack — 40 строк шума на каждое сообщение.)
+    logger.debug('rl', 'No ONNX model — using fallback heuristic', {
+      modelsDir: SIDECAR_MODELS_DIR,
+      hint: 'Чтобы включить обучаемый стиль: cd python-sidecar && python main.py, затем Настройки → Обучение → Запустить',
+    });
     return false;
   }
 

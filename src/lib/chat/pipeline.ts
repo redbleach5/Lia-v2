@@ -542,7 +542,9 @@ async function processRL(params: {
     if (rlModelLoaded) {
       log.info('rl', 'Predicted action', { action: rlActionLabel, actionId: rlActionId, confidence: rlConfidence.toFixed(2), version: rlModelVersion });
     } else {
-      log.info('rl', 'No ONNX model — will use fallback heuristic');
+      // Понизил с info до debug — это ожидаемое состояние пока Python sidecar
+      // ни разу не запускали. Не нужно шуметь в логах на каждый чат.
+      log.debug('rl', 'No ONNX model — will use fallback heuristic');
     }
 
     return { rlActionId, rlConfidence, rlActionLabel, rlModelVersion, rlModelLoaded, rlState, rlExperienceId };

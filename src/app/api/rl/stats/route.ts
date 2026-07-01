@@ -16,10 +16,19 @@ export async function GET() {
       countExperiences(),
     ]);
 
+    // Если sidecar не запущен — добавляем подсказку как запустить.
+    // Иначе пользователь видит "fetch failed" без объяснений.
+    let sidecarHint: string | null = null;
+    if (!sidecar.ok && sidecar.error && (sidecar.error.includes('fetch failed') || sidecar.error.includes('ECONNREFUSED'))) {
+      sidecarHint = 'Python sidecar не запущен. Запусти: cd python-sidecar && python main.py ' +
+        '(или через UI: Настройки → Обучение → Запустить)';
+    }
+
     return NextResponse.json({
       sidecar_ok: sidecar.ok,
       sidecar_stats: sidecar.stats,
       sidecar_error: sidecar.error,
+      sidecar_hint: sidecarHint,
       local_experiences: localCount,
     });
   } catch (e) {

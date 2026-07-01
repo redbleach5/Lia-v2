@@ -294,6 +294,24 @@ export async function getModelName(): Promise<string> {
   return currentProvider === 'groq' ? currentGroqModel : currentModel;
 }
 
+/**
+ * Возвращает текущего провайдера ('ollama' | 'groq').
+ * Используется в agent runner pre-flight check.
+ */
+export async function getProvider(): Promise<'ollama' | 'groq'> {
+  await loadSettings();
+  return currentProvider;
+}
+
+/**
+ * Возвращает Groq API key (или пустую строку если не задан).
+ * Используется в agent runner pre-flight check.
+ */
+export async function getGroqApiKey(): Promise<string> {
+  await loadSettings();
+  return currentGroqApiKey;
+}
+
 // ============================================================================
 // Embeddings — direct HTTP to Ollama
 // ============================================================================
@@ -395,7 +413,18 @@ export async function embed(text: string): Promise<Float32Array> {
     return new Float32Array(vec);
   } catch (e) {
     if (e instanceof Error && e.message.startsWith('Ollama embed HTTP')) throw e;
-    logger.error('ollama', 'Embed fetch failed', { model: modelToUse }, e);
+    // ECONNREFUSED — Ollama не запущен. Это ожидаемая ситуация при первом
+    // запуске или когда пользователь использует только Groq. Логируем как
+    // warn без полного stack trace, чтобы не засорять логи.
+    const isConnRefused = e instanceof Error && (e.message.includes('ECONNREFUSED') || e.message.includes('fetch failed'));
+    if (isConnRefused) {
+      logger.warn('ollama', 'Embed skipped — Ollama not reachable', {
+        model: modelToUse,
+        baseUrl: currentBaseUrl,
+      });
+    } else {
+      logger.error('ollama', 'Embed fetch failed', { model: modelToUse }, e);
+    }
     throw e;
   }
 }

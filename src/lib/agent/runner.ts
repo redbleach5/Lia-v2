@@ -18,7 +18,7 @@ import 'server-only';
 // в pending, runner при следующем /start пропускает PLAN и продолжает с steps.length.
 
 import { streamText, isStepCount, type ModelMessage, type ToolSet } from 'ai';
-import { getChatModel, checkOllamaHealth, getModelName } from '@/lib/ollama';
+import { getChatModel, checkOllamaHealth, getModelName, getProvider, getGroqApiKey } from '@/lib/ollama';
 import { db } from '@/lib/db';
 import { z } from 'zod';
 import { logger } from '@/lib/logger';
@@ -239,43 +239,76 @@ export async function runAgentTask(taskId: string): Promise<void> {
   watchdogTimer.unref?.();
 
   try {
-    // ── 0. Pre-flight: Ollama availability check ──
-    log.debug('ollama', 'Pre-flight Ollama check');
+    // ── 0. Pre-flight: LLM availability check ──
+    // Раньше проверяли только Ollama — но если provider='groq', Ollama не нужен
+    // для chat (только для embeddings, а они падают gracefully).
+    // Теперь: если provider='groq' — проверяем что Groq ключ задан.
+    // Если provider='ollama' — проверяем что Ollama жив и имеет модели.
+    log.debug('llm', 'Pre-flight LLM check');
     const preflightStart = Date.now();
-    const preflight = await checkOllamaHealth();
-    log.debug('ollama', `Pre-flight done (${Date.now() - preflightStart}ms)`, {
-      ok: preflight.ok,
-      modelsCount: preflight.models.length,
+    const provider = await getProvider();
+    const preflight = await checkOllamaHealth(); // всё ещё нужно для embeddings
+    log.debug('llm', `Pre-flight done (${Date.now() - preflightStart}ms)`, {
+      provider,
+      ollamaOk: preflight.ok,
+      ollamaModels: preflight.models.length,
     });
 
-    if (!preflight.ok) {
-      const errMsg = `Ollama недоступен: ${preflight.error ?? 'unknown'}. Запусти \`ollama serve\` и проверь URL в настройках.`;
-      log.error('ollama', 'Pre-flight failed — Ollama unavailable', {
-        error: preflight.error,
-      }, new Error(errMsg));
-      await updateAgentTask(taskId, {
-        status: 'failed',
-        completedAt: new Date(),
-        error: errMsg,
-      });
-      emitAgentEvent({ type: 'task_failed', taskId, error: errMsg, ts: Date.now() });
-      bufferEvent({ type: 'task_failed', taskId, error: errMsg, ts: Date.now() });
-      return;
-    }
-    if (preflight.models.length === 0) {
-      const errMsg = 'В Ollama нет моделей. Скачай хотя бы одну: `ollama pull qwen2.5:7b`.';
-      log.error('ollama', 'Pre-flight failed — no models available');
-      await updateAgentTask(taskId, {
-        status: 'failed',
-        completedAt: new Date(),
-        error: errMsg,
-      });
-      emitAgentEvent({ type: 'task_failed', taskId, error: errMsg, ts: Date.now() });
-      bufferEvent({ type: 'task_failed', taskId, error: errMsg, ts: Date.now() });
-      return;
+    if (provider === 'ollama') {
+      if (!preflight.ok) {
+        const errMsg = `Ollama недоступен: ${preflight.error ?? 'unknown'}. Запусти \`ollama serve\` и проверь URL в настройках.`;
+        log.error('ollama', 'Pre-flight failed — Ollama unavailable', {
+          error: preflight.error,
+        }, new Error(errMsg));
+        await updateAgentTask(taskId, {
+          status: 'failed',
+          completedAt: new Date(),
+          error: errMsg,
+        });
+        emitAgentEvent({ type: 'task_failed', taskId, error: errMsg, ts: Date.now() });
+        bufferEvent({ type: 'task_failed', taskId, error: errMsg, ts: Date.now() });
+        return;
+      }
+      if (preflight.models.length === 0) {
+        const errMsg = 'В Ollama нет моделей. Скачай хотя бы одну: `ollama pull qwen2.5:7b`.';
+        log.error('ollama', 'Pre-flight failed — no models available');
+        await updateAgentTask(taskId, {
+          status: 'failed',
+          completedAt: new Date(),
+          error: errMsg,
+        });
+        emitAgentEvent({ type: 'task_failed', taskId, error: errMsg, ts: Date.now() });
+        bufferEvent({ type: 'task_failed', taskId, error: errMsg, ts: Date.now() });
+        return;
+      }
+    } else if (provider === 'groq') {
+      // Groq pre-flight: проверяем что ключ задан.
+      // Не делаем реальный API call — это заняло бы время и могло упасть
+      // из-за rate limit. Если ключ невалиден, ошибка проявится в streamText
+      // и будет залогирована с понятным сообщением.
+      const groqKey = await getGroqApiKey();
+      if (!groqKey) {
+        const errMsg = 'Groq API ключ не задан. Открой Настройки → Модель → Groq и введи ключ.';
+        log.error('llm', 'Pre-flight failed — Groq API key not set');
+        await updateAgentTask(taskId, {
+          status: 'failed',
+          completedAt: new Date(),
+          error: errMsg,
+        });
+        emitAgentEvent({ type: 'task_failed', taskId, error: errMsg, ts: Date.now() });
+        bufferEvent({ type: 'task_failed', taskId, error: errMsg, ts: Date.now() });
+        return;
+      }
+      // Ollama для embeddings опционален — если не работает, recall/remember
+      // просто возвращают пустой результат (warn-level). Продолжаем.
+      if (!preflight.ok) {
+        log.warn('ollama', 'Ollama not reachable — embeddings will be skipped (non-fatal for Groq provider)', {
+          error: preflight.error,
+        });
+      }
     }
 
-    log.info('ollama', 'Pre-flight OK', { models: preflight.models.length });
+    log.info('llm', 'Pre-flight OK', { provider, ollamaModels: preflight.models.length });
 
     await updateAgentTask(taskId, {
       status: 'planning',
@@ -412,6 +445,12 @@ export async function runAgentTask(taskId: string): Promise<void> {
       vectorHits.length > 0 ? 'Релевантные воспоминания:\n' + vectorHits.map(h => h.text.slice(0, 300)).join('\n---\n') : '',
     ].filter(Boolean).join('\n\n');
 
+    // ── Circuit breaker: если N шагов подряд упали с streamText onError
+    // (например, Groq 403, rate limit, network) — нет смысла продолжать.
+    // Прерываем задачу с понятной ошибкой вместо maxSteps бесполезных попыток.
+    let consecutiveStreamErrors = 0;
+    const MAX_CONSECUTIVE_ERRORS = 3;
+
     for (let i = startStep; i < task.maxSteps; i++) {
       // Cancellation check — between steps
       if (isCancelled(taskId)) {
@@ -495,6 +534,37 @@ export async function runAgentTask(taskId: string): Promise<void> {
         observationLength: stepResult.observation.length,
         finished: stepResult.finished,
       });
+
+      // ── Circuit breaker: detect stream errors from observation ──
+      // executeStep writes "Ошибка: ..." into observation when streamText fails.
+      // If we see this pattern N times in a row — fail the task.
+      const looksLikeStreamError = stepResult.observation.startsWith('Ошибка:')
+        || stepResult.observation.includes('No output generated')
+        || stepResult.observation.length < 60 && stepResult.action === 'reason';
+      if (looksLikeStreamError) {
+        consecutiveStreamErrors++;
+        if (consecutiveStreamErrors >= MAX_CONSECUTIVE_ERRORS) {
+          const errMsg = `LLM не отвечает (${MAX_CONSECUTIVE_ERRORS} шага подряд). ` +
+            `Возможные причины: невалидный API ключ, rate limit, network error. ` +
+            `Последняя observation: ${stepResult.observation.slice(0, 200)}`;
+          log.error('agent', `Circuit breaker — ${MAX_CONSECUTIVE_ERRORS} consecutive stream errors, failing task`, {
+            taskId,
+            lastObservation: stepResult.observation.slice(0, 200),
+          });
+          await updateAgentTask(taskId, {
+            status: 'failed',
+            completedAt: new Date(),
+            error: errMsg,
+            stepsJson: JSON.stringify(steps),
+            currentStep: i + 1,
+          });
+          emitAgentEvent({ type: 'task_failed', taskId, error: errMsg, ts: Date.now() });
+          bufferEvent({ type: 'task_failed', taskId, error: errMsg, ts: Date.now() });
+          return;
+        }
+      } else {
+        consecutiveStreamErrors = 0;
+      }
       if (stepResult.action !== 'reason') {
         log.debug('agent', `Step ${i + 1} tool call`, {
           action: stepResult.action,
@@ -856,7 +926,8 @@ async function executeStep(
   // throws AI_NoOutputGeneratedError — это бесполезное "No output generated".
   // Реальная причина (rate limit / 4xx от Groq) приходит в onError, и мы её
   // логируем отдельно, а также пробрасываем в warn для отладки.
-  let streamError: Error | null = null;
+  // Храним raw error (unknown) — извлекаем короткое сообщение через extractErrorSummary.
+  let streamError: unknown = null;
   if (tryWithTools) {
     const result = streamText({
       model,
@@ -869,25 +940,10 @@ async function executeStep(
       abortSignal: AbortSignal.timeout(LLM_TIMEOUT_MS),
       onError: (error) => {
         // Vercel AI SDK onError callback receives a non-Error object.
-        // Convert to proper Error so pino serializers.err can extract
-        // message/stack/cause. Otherwise logger does `new Error(String(error))`
-        // which produces "[object Object]".
-        const err = error instanceof Error
-          ? error
-          : new Error(
-              typeof error === 'string'
-                ? error
-                : (error as { message?: string })?.message
-                  ?? JSON.stringify(error),
-            );
-        // Preserve original props if it was an object (name, cause, etc)
-        if (error && typeof error === 'object' && !(error instanceof Error)) {
-          const e = error as { name?: string; cause?: unknown };
-          if (e.name) err.name = e.name;
-          if (e.cause !== undefined) (err as Error & { cause?: unknown }).cause = e.cause;
-        }
-        streamError = err;
-        log.error('agent', `Step ${stepNum} streamText (with tools) onError`, { modelName }, err);
+        // Сохраняем raw object для последующего извлечения statusCode/responseBody.
+        streamError = error;
+        const summary = extractErrorSummary(error);
+        log.error('agent', `Step ${stepNum} streamText (with tools) onError`, { modelName, ...summary }, error instanceof Error ? error : undefined);
       },
       onStepFinish: ({ toolCalls: tcs, toolResults: trs }) => {
         if (tcs) {
@@ -939,7 +995,7 @@ async function executeStep(
   // ── Attempt 2: without tools (text-only fallback) ──
   if (!fullText && toolCalls.length === 0) {
     log.info('agent', `Step ${stepNum} fallback to text-only mode`);
-    let fallbackStreamError: Error | null = null;
+    let fallbackStreamError: unknown = null;
     const result = streamText({
       model,
       system: system + '\n\nВАЖНО: У тебя нет прямого доступа к инструментам. Вместо вызова инструмента, опиши в тексте какое действие нужно выполнить и почему.',
@@ -948,21 +1004,9 @@ async function executeStep(
       maxOutputTokens: EXECUTION_MAX_TOKENS,
       abortSignal: AbortSignal.timeout(LLM_TIMEOUT_MS),
       onError: (error) => {
-        const err = error instanceof Error
-          ? error
-          : new Error(
-              typeof error === 'string'
-                ? error
-                : (error as { message?: string })?.message
-                  ?? JSON.stringify(error),
-            );
-        if (error && typeof error === 'object' && !(error instanceof Error)) {
-          const e = error as { name?: string; cause?: unknown };
-          if (e.name) err.name = e.name;
-          if (e.cause !== undefined) (err as Error & { cause?: unknown }).cause = e.cause;
-        }
-        fallbackStreamError = err;
-        log.error('agent', `Step ${stepNum} streamText (fallback) onError`, { modelName }, err);
+        fallbackStreamError = error;
+        const summary = extractErrorSummary(error);
+        log.error('agent', `Step ${stepNum} streamText (fallback) onError`, { modelName, ...summary }, error instanceof Error ? error : undefined);
       },
     });
 
@@ -974,9 +1018,13 @@ async function executeStep(
       });
     } catch (e) {
       const realError = fallbackStreamError ?? e;
-      fullText = `Ошибка: ${realError instanceof Error ? realError.message : String(realError)}`;
+      const summary = extractErrorSummary(realError);
+      const errMsg = summary.message
+        ? (summary.statusCode ? `[${summary.statusCode}] ` : '') + summary.message
+        : 'Unknown error';
+      fullText = `Ошибка: ${errMsg.slice(0, 200)}`;
       log.error('agent', `Step ${stepNum} fallback streamText failed`, {
-        errorName: realError instanceof Error ? realError.name : 'Unknown',
+        errorName: summary.name,
         throwMessage: e instanceof Error ? e.message : String(e),
       }, realError instanceof Error ? realError : e instanceof Error ? e : undefined);
     }
@@ -1179,4 +1227,61 @@ export async function cancelAgentTaskRun(taskId: string): Promise<void> {
   } else {
     logger.debug('agent', `Cancel: task already in terminal status`, { status: task?.status });
   }
+}
+
+// ============================================================================
+// extractErrorSummary — извлекает короткое сообщение об ошибке из любого
+// объекта (Error, AI_SDK error object, plain object, string).
+// ============================================================================
+// Возвращает { message, name?, statusCode?, url?, isRetryable? } без огромного
+// requestBodyValues/system prompt, который AI SDK включает в error object.
+function extractErrorSummary(err: unknown): {
+  message: string;
+  name?: string;
+  statusCode?: number;
+  url?: string;
+  isRetryable?: boolean;
+} {
+  if (err instanceof Error) {
+    // Иногда Error.message содержит JSON (когда мы делали new Error(JSON.stringify(obj)))
+    if (err.message.startsWith('{') && err.message.includes('AI_APICallError')) {
+      try {
+        const parsed = JSON.parse(err.message);
+        return extractErrorSummary(parsed);
+      } catch { /* fall through */ }
+    }
+    return { message: err.message, name: err.name };
+  }
+  if (err && typeof err === 'object') {
+    const e = err as {
+      message?: string; name?: string; statusCode?: number;
+      url?: string; isRetryable?: boolean;
+      responseBody?: string;
+      data?: { error?: { message?: string } } | { error?: { message?: string }[] };
+      error?: unknown;
+    };
+    // AI SDK sometimes wraps in { error: <real error> }
+    if (e.error && typeof e.error === 'object' && !('statusCode' in e) && !('responseBody' in e)) {
+      return extractErrorSummary(e.error);
+    }
+    let msg = e.message;
+    if (!msg) {
+      const dataErr = Array.isArray(e.data) ? e.data[0]?.error : e.data?.error;
+      if (dataErr?.message) msg = dataErr.message;
+    }
+    if (!msg && e.responseBody) {
+      try {
+        const parsed = JSON.parse(e.responseBody);
+        msg = parsed?.error?.message ?? parsed?.message;
+      } catch { /* ignore */ }
+    }
+    return {
+      message: msg ?? '(no message)',
+      name: e.name,
+      statusCode: e.statusCode,
+      url: e.url,
+      isRetryable: e.isRetryable,
+    };
+  }
+  return { message: String(err) };
 }

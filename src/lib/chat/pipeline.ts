@@ -238,6 +238,12 @@ export async function runChatPipeline(input: ChatPipelineInput): Promise<ChatPip
   const rlActionId = rlResult.rlActionId;
   const rlModelVersion = rlResult.rlModelVersion;
 
+  // ── Track stream error for fallback response ──
+  // Если Groq/Ollama падает (403, rate limit, network), streamText эммитит
+  // onError но result.text resolves to empty string. Без этого флага
+  // пользователь получит пустой ответ без объяснения.
+  let streamError: { message: string; statusCode?: number; isRetryable?: boolean } | null = null;
+
   const result = streamText({
     model,
     system: systemPrompt + (deliberateContext ? `\n\nВНУТРЕННИЙ АНАЛИЗ:\n${deliberateContext}` : ''),
@@ -250,13 +256,62 @@ export async function runChatPipeline(input: ChatPipelineInput): Promise<ChatPip
     maxOutputTokens: plan.maxTokens,
     topP: 0.9,
     onError: (error) => {
-      // Groq/API errors come as objects — stringify for readable log
-      const errMsg = error instanceof Error
-        ? error.message
-        : typeof error === 'object' && error !== null
-          ? JSON.stringify(error)
-          : String(error);
-      log.error('chat', 'streamText onError', { errorStr: errMsg }, error instanceof Error ? error : undefined);
+      // Groq / OpenAI-compatible API errors come as objects with shape:
+      //   { name: 'AI_APICallError', url, requestBodyValues, statusCode,
+      //     responseHeaders, responseBody, isRetryable, data }
+      // Logging the full object dumps the entire system prompt + messages
+      // into logs (KBs of text per error). Extract only the diagnostic bits.
+      const summarize = (err: unknown): { message: string; name?: string; statusCode?: number; url?: string; responseBody?: string; isRetryable?: boolean } => {
+        if (err instanceof Error) {
+          return { message: err.message, name: err.name };
+        }
+        if (err && typeof err === 'object') {
+          // AI SDK иногда оборачивает ошибку в { error: <real error> }.
+          // Разворачиваем один уровень чтобы достучаться до statusCode/responseBody.
+          let e = err as {
+            message?: string; name?: string; statusCode?: number;
+            url?: string; responseBody?: string; isRetryable?: boolean;
+            data?: { error?: { message?: string } } | { error?: { message?: string }[] };
+            error?: unknown;
+          };
+          if (e.error && typeof e.error === 'object' && !('statusCode' in e) && !('responseBody' in e)) {
+            // Looks like a wrapper — unwrap
+            e = e.error as typeof e;
+          }
+
+          // AI SDK errors often nest the real message in data.error.message
+          // or responseBody (JSON string). Extract the most informative one.
+          let msg = e.message;
+          if (!msg || msg === '(no message)') {
+            // Try data.error.message
+            const dataErr = Array.isArray(e.data) ? e.data[0]?.error : e.data?.error;
+            if (dataErr?.message) msg = dataErr.message;
+          }
+          if (!msg) {
+            // Try parsing responseBody
+            if (e.responseBody) {
+              try {
+                const parsed = JSON.parse(e.responseBody);
+                msg = parsed?.error?.message ?? parsed?.message ?? e.responseBody.slice(0, 200);
+              } catch {
+                msg = e.responseBody.slice(0, 200);
+              }
+            }
+          }
+          return {
+            message: msg ?? '(no message)',
+            name: e.name,
+            statusCode: e.statusCode,
+            url: e.url,
+            responseBody: e.responseBody?.slice(0, 300),
+            isRetryable: e.isRetryable,
+          };
+        }
+        return { message: String(err) };
+      };
+      const summary = summarize(error);
+      streamError = summary;
+      log.error('chat', 'streamText onError', summary, error instanceof Error ? error : undefined);
     },
     onFinish: async ({ text: fullText, usage }) => {
       await persistResponse({
@@ -285,7 +340,15 @@ export async function runChatPipeline(input: ChatPipelineInput): Promise<ChatPip
     try { return Buffer.from(s, 'utf-8').toString('base64'); } catch { return ''; }
   };
 
-  const response = result.toTextStreamResponse({
+  // ── Если streamText упал в onError — вернуть понятное сообщение ──
+  // Иначе toTextStreamResponse() вернёт пустой stream, и пользователь
+  // увидит пустой пузырь сообщения без объяснения.
+  //
+  // ВАЖНО: onError вызывается асинхронно во время чтения stream, поэтому
+  // проверка streamError сразу после streamText() НЕ сработает.
+  // Вместо этого оборачиваем stream в свой ReadableStream, который
+  // при ошибке выбрасывает понятное сообщение.
+  const originalResponse = result.toTextStreamResponse({
     headers: {
       'Content-Type': 'text/plain; charset=utf-8',
       'Cache-Control': 'no-cache, no-transform',
@@ -307,6 +370,60 @@ export async function runChatPipeline(input: ChatPipelineInput): Promise<ChatPip
       'X-Disagreement-B64': encodeB64(disagreement.level),
       'X-RL-Action-B64': encodeB64(rlResult.rlActionLabel || 'none'),
     },
+  });
+
+  // ── Wrap original stream: detect empty/error and inject fallback message ──
+  // Если streamText упал в onError, originalResponse.body будет пустым или
+  // оборвётся. Перехватываем чтение, и если stream пустой ИЛИ streamError
+  // был установлен — заменяем на понятное сообщение для пользователя.
+  const originalBody = originalResponse.body;
+  const wrappedBody = new ReadableStream<Uint8Array>({
+    async start(controller) {
+      let bytesReceived = 0;
+      try {
+        if (!originalBody) {
+          // No body at all — streamText failed immediately
+          const fallback = streamError
+            ? formatStreamErrorForUser(streamError)
+            : '⚠️ Не удалось получить ответ от модели. Проверь настройки LLM-провайдера.';
+          controller.enqueue(new TextEncoder().encode(fallback));
+          controller.close();
+          return;
+        }
+        const reader = originalBody.getReader();
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          if (value) {
+            bytesReceived += value.byteLength;
+            controller.enqueue(value);
+          }
+        }
+        // Stream закончился. Если ничего не пришло ИЛИ была ошибка — fallback.
+        if (bytesReceived === 0 || streamError) {
+          const fallback = streamError
+            ? formatStreamErrorForUser(streamError)
+            : '⚠️ Модель вернула пустой ответ. Возможно, превышен rate limit или невалидный API ключ.';
+          controller.enqueue(new TextEncoder().encode(fallback));
+        }
+        controller.close();
+      } catch (e) {
+        // Stream reading itself failed — last resort fallback
+        const msg = streamError
+          ? formatStreamErrorForUser(streamError)
+          : `⚠️ Stream прерван: ${e instanceof Error ? e.message : String(e)}`;
+        try {
+          controller.enqueue(new TextEncoder().encode(msg));
+        } catch { /* controller already closed */ }
+        controller.close();
+      }
+    },
+  });
+
+  const response = new Response(wrappedBody, {
+    status: originalResponse.status,
+    statusText: originalResponse.statusText,
+    headers: originalResponse.headers,
   });
 
   return { response };
@@ -555,4 +672,40 @@ async function persistResponse(params: {
   // Fact extraction (background)
   extractAndSaveFacts({ userMessage: text, liaMessage: fullText, episodeId })
     .catch(e => log.warn('chat', 'Fact extraction failed (non-fatal)', {}, e));
+}
+
+// ============================================================================
+// formatStreamErrorForUser — конвертирует streamText onError в понятное
+// сообщение для пользователя.
+// ============================================================================
+function formatStreamErrorForUser(err: { message: string; statusCode?: number; isRetryable?: boolean }): string {
+  const statusCode = err.statusCode;
+  // 403 — обычно невалидный API ключ или geo-block (Cloudflare)
+  if (statusCode === 403) {
+    return '⚠️ Не удалось подключиться к LLM-провайдеру (403 Forbidden). ' +
+      'Возможные причины:\n' +
+      '• Невалидный API ключ — проверь в Настройках → Модель\n' +
+      '• IP заблокирован (Cloudflare geo-block) — попробуй VPN\n' +
+      '• Срок действия ключа истёк';
+  }
+  // 429 — rate limit
+  if (statusCode === 429) {
+    return '⚠️ Слишком много запросов (429). Подожди минуту и попробуй снова. ' +
+      (err.isRetryable ? 'Запрос можно повторить.' : '');
+  }
+  // 5xx — серверная ошибка
+  if (statusCode && statusCode >= 500) {
+    return `⚠️ Сервер LLM вернул ошибку ${statusCode}. Попробуй через минуту.`;
+  }
+  // 401 — unauthorized (невалидный ключ)
+  if (statusCode === 401) {
+    return '⚠️ Невалидный API ключ. Открой Настройки → Модель и проверь ключ.';
+  }
+  // ECONNREFUSED — Ollama не запущен
+  if (err.message.includes('ECONNREFUSED') || err.message.includes('fetch failed')) {
+    return '⚠️ Не удалось подключиться к LLM. Если используешь Ollama — запусти `ollama serve`. ' +
+      'Если Groq — проверь интернет и API ключ в Настройках.';
+  }
+  // Generic
+  return `⚠️ Не удалось получить ответ от модели: ${err.message.slice(0, 200)}`;
 }

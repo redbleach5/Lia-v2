@@ -6,21 +6,26 @@ Endpoints:
     GET  /stats            — transition count, model versions
     GET  /models           — list saved policy versions
     POST /train            — train a new policy version (blocking, ~30 sec)
-    POST /predict          — run inference with a given model version (debug)
 
 The Next.js side calls /train to schedule training and uses the exported ONNX
 file for runtime inference (via onnxruntime-node) — no HTTP roundtrip per
 action.
+
+Security: endpoints защищены API key (X-Sidecar-Key header).
+Ключ задаётся через env LIA_SIDECAR_API_KEY на обеих сторонах.
+Если env не установлен — sidecar отказывается запускаться (fail-closed).
 """
 
 from __future__ import annotations
 
+import contextlib
 import os
 from pathlib import Path
 from typing import Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from rl.db import count_transitions, load_transitions, resolve_db_path
@@ -36,6 +41,40 @@ app = FastAPI(
     description="Training + inference for Lia's RL policy",
     version="1.0.0",
 )
+
+# ============================================================================
+# Auth — API key via X-Sidecar-Key header.
+# Ключ задаётся через env LIA_SIDECAR_API_KEY на обеих сторонах (sidecar + Next.js).
+# Если env не установлен — fail-closed (запрещаем запуск).
+# ============================================================================
+SIDECAR_API_KEY = os.environ.get("LIA_SIDECAR_API_KEY")
+
+
+@app.middleware("http")
+async def auth_middleware(request: Request, call_next):
+    """Проверка X-Sidecar-Key на всех endpoint'ах кроме /health.
+
+    /health остаётся открытым — он нужен для liveness probe без auth.
+    """
+    if request.url.path == "/health":
+        return await call_next(request)
+
+    if not SIDECAR_API_KEY:
+        # Fail-closed: если ключ не задан, sidecor непригоден.
+        return JSONResponse(
+            status_code=503,
+            content={"detail": "LIA_SIDECAR_API_KEY not set — sidecar misconfigured"},
+        )
+
+    provided = request.headers.get("X-Sidecar-Key", "")
+    if provided != SIDECAR_API_KEY:
+        return JSONResponse(
+            status_code=401,
+            content={"detail": "invalid or missing X-Sidecar-Key"},
+        )
+
+    return await call_next(request)
+
 
 # CORS — allow the Next.js side (localhost:3000) to call us
 app.add_middleware(
@@ -144,9 +183,13 @@ async def train_endpoint(req: TrainRequest):
         raise HTTPException(status_code=500, detail=f"Training failed: {e}")
 
 
-@app.post("/predict", response_model=PredictResponse)
+@app.post("/predict", response_model=PredictResponse, include_in_schema=False)
 async def predict(req: PredictRequest):
-    """Debug inference endpoint. Production uses ONNX in Next.js."""
+    """Debug inference endpoint. Production uses ONNX in Next.js.
+
+    Endpoint оставлен для отладки, но скрыт из OpenAPI schema.
+    Защищён тем же X-Sidecar-Key, что и остальные endpoint'ы.
+    """
     if not req.state:
         raise HTTPException(status_code=400, detail="state required")
 
@@ -165,9 +208,8 @@ async def predict(req: PredictRequest):
     action, confidence = model.predict(state_tensor)
 
     # Get value too — value head of the policy network.
-    # Если model() падает (например, не реализован value head), value = 0.0.
     value = 0.0
-    with __import__("contextlib").suppress(Exception):
+    with contextlib.suppress(Exception):
         _, value_tensor = model(state_tensor.unsqueeze(0))
         value = float(value_tensor.item())
 
@@ -221,6 +263,8 @@ def get_active_version() -> Optional[int]:
     """
     Get the active model version — stored in the Setting table as
     'rl_active_version'. Falls back to latest if not set.
+
+    Phase 5.1: PRAGMA busy_timeout для консистентности с rl/db.py.
     """
     import sqlite3
     db_path = resolve_db_path()
@@ -228,6 +272,7 @@ def get_active_version() -> Optional[int]:
         return None
     try:
         conn = sqlite3.connect(db_path)
+        conn.execute("PRAGMA busy_timeout = 5000")
         try:
             cursor = conn.execute(
                 "SELECT value FROM Setting WHERE key = 'rl_active_version'"
@@ -244,9 +289,15 @@ def get_active_version() -> Optional[int]:
 # Main
 # ============================================================================
 if __name__ == "__main__":
+    if not SIDECAR_API_KEY:
+        # Fail-closed: без ключа sidecar бесполезен и небезопасен.
+        raise SystemExit(
+            "LIA_SIDECAR_API_KEY env var is required. "
+            "Set it to a random string and configure the same value on the Next.js side."
+        )
     import uvicorn
     uvicorn.run(
-        "main:app",
+        app,
         host="127.0.0.1",
         port=8765,
         reload=False,  # disable reload in production

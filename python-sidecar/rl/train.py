@@ -169,13 +169,30 @@ def train(
         _, next_values = model(next_states)
         next_values = next_values.squeeze(-1)
 
-        # GAE
+        # GAE with episode-boundary reset.
+        # Phase 1 fix: last_gae должен сбрасываться в 0 при смене episode_id,
+        # иначе advantage из конца эпизода A "утекает" в начало эпизода B.
+        # Также: если next_state принадлежит другому эпизоду, используем 0
+        # как bootstrap value (т.к. эпизод закончился).
         advantages = torch.zeros_like(rewards)
-        last_gae = 0
+        last_gae = 0.0
+        prev_episode_id = None
         for t in reversed(range(len(transitions))):
-            delta = rewards[t] + config.gamma * next_values[t] - values[t]
+            current_episode_id = transitions[t].episode_id
+            # Reset GAE на границе эпизодов
+            if prev_episode_id is not None and current_episode_id != prev_episode_id:
+                last_gae = 0.0
+            # Если следующий transition из другого эпизода — bootstrap = 0
+            # (текущий transition — последний в своём эпизоде)
+            is_last_in_episode = (
+                t == len(transitions) - 1
+                or transitions[t + 1].episode_id != current_episode_id
+            )
+            bootstrap = 0.0 if is_last_in_episode else next_values[t].item()
+            delta = rewards[t] + config.gamma * bootstrap - values[t]
             last_gae = delta + config.gamma * config.gae_lambda * last_gae
             advantages[t] = last_gae
+            prev_episode_id = current_episode_id
 
         returns = advantages + values
 
@@ -186,10 +203,7 @@ def train(
     n_samples = len(transitions)
     n_batches = max(1, n_samples // config.batch_size)
 
-    # Compute old log probs (for PPO ratio)
-    with torch.no_grad():
-        old_logits, _ = model(states)
-        old_log_probs = F.log_softmax(old_logits, dim=-1).gather(1, actions.unsqueeze(1)).squeeze(1)
+    # old_log_probs вычисляются внутри loop (см. ниже) — каждый epoch заново.
 
     total_loss_sum = 0.0
     total_value_loss_sum = 0.0
@@ -199,6 +213,14 @@ def train(
 
     model.train()
     for epoch in range(config.n_epochs):
+        # Phase 1 fix: пересчитываем old_log_probs каждый epoch.
+        # Раньше они вычислялись один раз перед loop — это "PPO with stale old_log_probs",
+        # приближение, которое работает но не строго корректно. После обновления весов
+        # в epoch N-1, "old" policy для epoch N должна быть текущей моделью.
+        with torch.no_grad():
+            old_logits, _ = model(states)
+            old_log_probs = F.log_softmax(old_logits, dim=-1).gather(1, actions.unsqueeze(1)).squeeze(1)
+
         # Shuffle indices
         perm = torch.randperm(n_samples)
 
@@ -269,8 +291,15 @@ def train(
     pt_path = os.path.join(config.output_dir, f"policy_v{new_version}.pt")
     onnx_path = os.path.join(config.output_dir, f"policy_v{new_version}.onnx")
 
+    # Phase 1 fix: atomic write для ONNX через .tmp + rename.
+    # Раньше export_to_onnx писал напрямую в policy_v{N}.onnx — если Next.js
+    # вызывал reloadModel() сразу после train, onnxruntime-node мог прочитать
+    # partially-written файл. Теперь: пишем в .tmp, затем atomic rename.
     save_model(model, pt_path)
-    export_to_onnx(model, onnx_path)
+
+    onnx_tmp_path = onnx_path + ".tmp"
+    export_to_onnx(model, onnx_tmp_path)
+    os.replace(onnx_tmp_path, onnx_path)  # atomic on POSIX
 
     print(f"[train] saved v{new_version}: {pt_path}, {onnx_path}")
 

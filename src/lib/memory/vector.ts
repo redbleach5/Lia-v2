@@ -1,3 +1,5 @@
+import 'server-only';
+
 // Vector memory — semantic search WITHIN a single episode.
 //
 // Это КЛЮЧЕВАЯ фиксация бага LIA v1: утечки фактов между чатами.
@@ -5,8 +7,8 @@
 // вектор из чата #1 НИКОГДА не появится в контексте чата #5.
 
 import { embed } from '@/lib/ollama';
-import { insertVectorMemory, searchVectorsInEpisode, generateId } from '@/lib/db-vec';
-import { db } from '@/lib/db';
+import { insertVectorMemory, searchVectorsInEpisode } from '@/lib/db-vec';
+import { randomUUID } from 'crypto';
 import { logger } from '@/lib/logger';
 
 /**
@@ -20,7 +22,7 @@ export async function remember(params: {
   try {
     const embedding = await embed(params.text);
     insertVectorMemory({
-      id: generateId(),
+      id: randomUUID(),
       episodeId: params.episodeId,
       sourceType: params.sourceType,
       text: params.text,
@@ -50,6 +52,7 @@ export async function recall(params: {
       queryEmbedding,
       limit: params.limit ?? 5,
       minSimilarity: params.minSimilarity ?? 0.3,
+      sourceType: 'dialogue',  // фикс cross-contamination: только диалоги, не emotional anchors
     });
     return hits.map(h => ({
       sourceType: h.sourceType,
@@ -70,16 +73,4 @@ export function formatVectorHitsForPrompt(hits: Array<{ sourceType: string; text
   return hits
     .map(h => `[${h.sourceType}, sim=${h.similarity.toFixed(2)}]\n${h.text.slice(0, 500)}`)
     .join('\n---\n');
-}
-
-/**
- * Stats for debug UI.
- */
-export async function getVectorStats(episodeId?: string) {
-  if (episodeId) {
-    const count = await db.vectorMemory.count({ where: { episodeId } });
-    return { episodeCount: count };
-  }
-  const total = await db.vectorMemory.count();
-  return { total };
 }

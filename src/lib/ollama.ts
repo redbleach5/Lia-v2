@@ -1,3 +1,5 @@
+import 'server-only';
+
 // Ollama client via @ai-sdk/openai-compatible.
 //
 // AI SDK gives us:
@@ -201,14 +203,6 @@ export async function getChatModel() {
   // Health check failed — try the configured model anyway (will likely 404)
   logger.warn('ollama', `Health check failed — using configured model anyway (will likely 404)`, { model: currentModel });
   return p.chatModel(currentModel);
-}
-
-/**
- * Returns the model name (for logging, UI display).
- */
-export async function getModelName(): Promise<string> {
-  await loadSettings();
-  return currentModel;
 }
 
 // ============================================================================

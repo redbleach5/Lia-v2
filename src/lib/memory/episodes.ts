@@ -1,3 +1,5 @@
+import 'server-only';
+
 // Episodes — CRUD for chat threads.
 //
 // Каждый эпизод = отдельный чат. Память привязана к эпизоду:
@@ -8,7 +10,6 @@
 // Глобально (переживает смену чата) только GlobalFact — профиль пользователя.
 
 import { db } from '@/lib/db';
-import { randomUUID } from 'crypto';
 import { logger } from '@/lib/logger';
 
 export type Episode = {
@@ -109,7 +110,6 @@ export async function closeEpisode(id: string, summary?: string): Promise<void> 
     },
   }).catch(() => null);
 }
-
 // ============================================================================
 // Messages
 // ============================================================================
@@ -207,8 +207,4 @@ export async function autoTitleEpisode(episodeId: string, firstUserMessage: stri
   } catch {
     return null;
   }
-}
-
-export function generateId(): string {
-  return randomUUID();
 }

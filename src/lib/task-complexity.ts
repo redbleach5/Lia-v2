@@ -66,14 +66,3 @@ export function classifyTaskComplexity(message: string): TaskComplexity {
   // Default
   return 'moderate';
 }
-
-// ============================================================================
-// Description for logging/debugging
-// ============================================================================
-export const COMPLEXITY_DESCRIPTIONS: Record<TaskComplexity, string> = {
-  trivial: 'тривиальная (привет/спасибо)',
-  simple: 'простой вопрос',
-  moderate: 'умеренная задача',
-  complex: 'сложная задача (анализ/рассуждение)',
-  research: 'исследовательская (нужен поиск)',
-};

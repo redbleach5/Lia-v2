@@ -5,13 +5,19 @@
 //
 // В production (Tauri/desktop) это должно запускаться автоматически при старте.
 // В dev-режиме пользователь может запустить из UI.
+//
+// Phase 5.1: передаёт LIA_SIDECAR_API_KEY в env child process.
+// Без ключа sidecar откажется запускаться (fail-closed в main.py).
 
 import { NextResponse } from 'next/server';
-import { spawn, execFileSync, type ChildProcess } from 'child_process';
+import { spawn, execFile, execFileSync, type ChildProcess } from 'child_process';
+import { promisify } from 'util';
 import { PATHS } from '@/lib/paths';
 import { existsSync } from 'fs';
 import path from 'path';
 import { logger } from '@/lib/logger';
+
+const execFileAsync = promisify(execFile);
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -32,7 +38,30 @@ function isRunning(): boolean {
   }
 }
 
-function start(): { ok: boolean; pid?: number; error?: string } {
+/**
+ * Найти python binary кросс-платформенно.
+ * На Windows нет `which` — используем `where` или просто пробуем python3/python.
+ */
+async function findPythonBinary(): Promise<string | null> {
+  // Сначала проверяем venv (предпочтительный)
+  const venvPython = path.join(PATHS.root, 'python-sidecar', '.venv', 'bin', 'python');
+  const venvPythonWin = path.join(PATHS.root, 'python-sidecar', '.venv', 'Scripts', 'python.exe');
+  if (existsSync(venvPython)) return venvPython;
+  if (existsSync(venvPythonWin)) return venvPythonWin;
+
+  // Пробуем python3, затем python
+  for (const bin of ['python3', 'python']) {
+    try {
+      await execFileAsync(bin, ['--version']);
+      return bin;
+    } catch {
+      // пробуем следующий
+    }
+  }
+  return null;
+}
+
+async function start(): Promise<{ ok: boolean; pid?: number; error?: string }> {
   if (isRunning()) {
     return { ok: true, pid: g[globalKey]?.pid };
   }
@@ -44,18 +73,21 @@ function start(): { ok: boolean; pid?: number; error?: string } {
     return { ok: false, error: 'python-sidecar/main.py не найден. Убедись, что проект скачан полностью.' };
   }
 
-  // Find python binary — try python3 first, then python
-  let pythonBin = 'python3';
-  try {
-    execFileSync('which', ['python3'], { stdio: 'ignore' });
-  } catch {
-    pythonBin = 'python';
+  // Phase 5.1: проверяем что LIA_SIDECAR_API_KEY задан — без него sidecar не запустится.
+  const sidecarApiKey = process.env.LIA_SIDECAR_API_KEY;
+  if (!sidecarApiKey) {
+    return {
+      ok: false,
+      error: 'LIA_SIDECAR_API_KEY не задан в .env. Добавь случайную строку и перезапусти Next.js.',
+    };
   }
 
-  // Check if venv exists — prefer it
-  const venvPython = path.join(sidecarDir, '.venv', 'bin', 'python');
-  if (existsSync(venvPython)) {
-    pythonBin = venvPython;
+  const pythonBin = await findPythonBinary();
+  if (!pythonBin) {
+    return {
+      ok: false,
+      error: 'Python не найден. Установи Python 3.10+ и убедись, что он в PATH.',
+    };
   }
 
   // Check if dependencies are installed (uvicorn is the key one)
@@ -71,12 +103,14 @@ function start(): { ok: boolean; pid?: number; error?: string } {
   try {
     const proc = spawn(pythonBin, [mainPy], {
       cwd: sidecarDir,
-      stdio: 'pipe', // capture stdout/stderr but don't pipe to console
+      stdio: 'pipe',
       detached: false,
       env: {
         ...process.env,
         // Pass DATABASE_URL so sidecar finds the same SQLite
         DATABASE_URL: process.env.DATABASE_URL || `file:${path.join(PATHS.db, 'custom.db')}`,
+        // Phase 5.1: явно передаём API key (хотя он уже в process.env, это для надёжности)
+        LIA_SIDECAR_API_KEY: sidecarApiKey,
       },
     });
 
@@ -109,7 +143,6 @@ function start(): { ok: boolean; pid?: number; error?: string } {
 
 export async function POST() {
   try {
-    // Wait a moment if already starting (in case of double-click)
     if (isRunning()) {
       return NextResponse.json({
         ok: true,
@@ -118,7 +151,7 @@ export async function POST() {
       });
     }
 
-    const result = start();
+    const result = await start();
     if (!result.ok) {
       return NextResponse.json(
         { ok: false, error: result.error },

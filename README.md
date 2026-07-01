@@ -13,8 +13,8 @@
 - **3D VRM-аватар** — blendshapes для эмоций, дыхание, моргание, lip-sync
 - **Live2D-стилизованный аватар** — PixiJS/WebGL, плавнее SVG (fallback для слабых устройств)
 - **Обучаемый стиль общения** — Python sidecar (PyTorch + PPO), ONNX export для inference
-- **Инструменты**: web_search, save_artifact, read_file, write_file, list_dir, http_request, ask_user
-- **Linear-style dark UI** — violet accent, Inter + JetBrains Mono
+- **Инструменты**: web_search, fetch_page, save_artifact, read_file, write_file, edit_file, list_dir, list_tree, file_search, http_request, code_run, ask_user, spawn_subagent, spawn_subagents
+- **Тёплый лён UI** — светлая палитра, warm brown accent, Plus Jakarta Sans + JetBrains Mono
 
 ## Стек
 
@@ -278,9 +278,8 @@ Python sidecar (FastAPI + PyTorch) обучает policy network через PPO 
 - [x] Live2D-стилизованный 2D аватар (PixiJS/WebGL)
 - [x] RL sidecar — Python + PyTorch + ONNX (обучаемый стиль общения)
 - [x] Settings UI — все настройки в одном диалоге
-- [ ] Batch consolidation — извлечение фактов раз в 5 мин вместо per-message
-- [ ] Resume after restart — persistent queue через Inngest
-- [ ] Sub-agents — параллельные подзадачи через spawn_subagent
+- [x] Sub-agents — параллельные подзадачи через spawn_subagent/subagents
+- [x] Resume after restart — checkpoint после каждого шага, восстановление при перезапуске
 - [ ] Tauri desktop packaging
 
 ## Документация

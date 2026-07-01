@@ -4,6 +4,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { getAgentTask, updateAgentTask } from '@/lib/agent/task';
 import { resolveWaiting, isWaiting } from '@/lib/agent/events';
 import { logger } from '@/lib/logger';
+import { parseBody, agentInputSchema } from '@/lib/infra/api-validation';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -16,13 +17,9 @@ export async function POST(
   const log = logger.context({ taskId: id.slice(0, 8) });
 
   try {
-    const body = await req.json().catch(() => ({}));
-    const answer: string | undefined = body?.answer;
-
-    if (!answer || typeof answer !== 'string' || answer.trim().length === 0) {
-      log.warn('agent', 'Input rejected — empty answer', { answerLength: answer?.length ?? 0 });
-      return NextResponse.json({ error: 'answer required' }, { status: 400 });
-    }
+    const parsed = await parseBody(req, agentInputSchema);
+    if (!parsed.success) return parsed.response;
+    const { answer } = parsed.data;
 
     const task = await getAgentTask(id);
     if (!task) {
@@ -39,28 +36,27 @@ export async function POST(
     }
 
     // Проверяем in-memory waiting state.
-    // ВАЖНО: в dev-режиме Next.js hot-reload может сбросить in-memory state
-    // (модуль events.ts переоценивается, Map waitingTasks очищается).
-    // Если задача в БД всё ещё waiting_input, но in-memory state потерян —
-    // мы не можем "разрешить" promise (он уже не существует).
-    // В этом случае помечаем задачу как failed с понятной ошибкой —
-    // пользователь должен перезапустить задачу.
+    //
+    // ВАЖНО: при HMR/restart in-memory Map waitingTasks теряется.
+    // Раньше мы помечали задачу как failed — это портило данные пользователя.
+    // Теперь: возвращаем 409 с понятным сообщением, НЕ трогая задачу в БД.
+    // Пользователь может перезапустить задачу (POST /api/agent/[id]/start
+    // уже умеет reset failed → pending).
+    //
+    // Полный resume (с восстановлением состояния ожидания) — Phase 4.1
+    // через checkpointJson.
     if (!isWaiting(id)) {
       log.error('agent', 'Input rejected — in-memory waiting state lost (likely server hot-reload)', {
         dbStatus: task.status,
         answerPreview: answer.slice(0, 80),
       });
-      // Помечаем задачу как failed — больше ничего не можем сделать.
-      // Раньше здесь возвращался 400 без объяснений, и пользователь не понимал что произошло.
-      await updateAgentTask(id, {
-        status: 'failed',
-        completedAt: new Date(),
-        error: `Сессия ожидания была потеряна (возможно из-за hot-reload в dev-режиме). Пользователь ответил: "${answer.slice(0, 100)}". Перезапустите задачу.`,
-      });
+      // НЕ помечаем задачу как failed — оставляем как есть, чтобы пользователь
+      // мог перезапустить её через /start без потери прогресса.
       return NextResponse.json({
         error: 'waiting state lost',
-        message: 'Сервер был перезагружен во время ожидания ответа. Задача помечена как failed. Перезапустите задачу.',
+        message: 'Сервер был перезагружен во время ожидания ответа. Перезапустите задачу — она продолжит с последнего шага.',
         userAnswer: answer.slice(0, 200),
+        restartUrl: `/api/agent/${id}/start`,
       }, { status: 409 });
     }
 

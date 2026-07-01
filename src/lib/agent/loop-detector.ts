@@ -1,3 +1,5 @@
+import 'server-only';
+
 // Loop detector — detects when agent is stuck in a loop.
 //
 // Three signals:

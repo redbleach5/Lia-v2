@@ -1,3 +1,5 @@
+import 'server-only';
+
 // Tools registry — what Lia can do.
 //
 // AI SDK native tool calling: model decides in one LLM call whether to use a tool
@@ -45,20 +47,3 @@ export const tools = {
   web_search: webSearchTool,
   save_artifact: saveArtifactTool,
 };
-
-export type ToolName = keyof typeof tools;
-
-/**
- * Возвращает краткое описание вызова для UI.
- */
-export function describeToolCall(name: string, input: unknown): string {
-  if (name === 'web_search') {
-    const q = (input as { query?: string })?.query ?? '';
-    return `Поиск: "${q}"`;
-  }
-  if (name === 'save_artifact') {
-    const f = (input as { filename?: string })?.filename ?? '';
-    return `Сохранение: ${f}`;
-  }
-  return name;
-}

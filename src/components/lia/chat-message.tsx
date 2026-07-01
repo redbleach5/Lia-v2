@@ -4,10 +4,11 @@ import { memo } from 'react';
 import type { ChatMessage as ChatMessageType } from '@/stores/chat-store';
 import { cn } from '@/lib/utils';
 import { ToolCallCard } from './tool-call-card';
+import { MarkdownRenderer } from './markdown-renderer';
 
 // React.memo предотвращает ре-рендер ранее отрендеренных сообщений
 // при стриминговом обновлении последнего сообщения.
-export const ChatMessage = memo(function ChatMessage({ message, isLast }: { message: ChatMessageType; isLast: boolean }) {
+export const ChatMessage = memo(function ChatMessage({ message }: { message: ChatMessageType }) {
   const isUser = message.role === 'user';
   const isStreaming = message.streaming === true;
 
@@ -28,7 +29,7 @@ export const ChatMessage = memo(function ChatMessage({ message, isLast }: { mess
           isStreaming && 'lia-cursor',
         )}
       >
-        <MessageContent text={message.content} isStreaming={isStreaming} />
+        <MessageContent text={message.content} isStreaming={isStreaming} isUser={isUser} />
       </div>
 
       {/* Tool calls */}
@@ -49,69 +50,27 @@ export const ChatMessage = memo(function ChatMessage({ message, isLast }: { mess
     </div>
   );
 });
-// MVP: code blocks + inline code + paragraphs.
-// Full markdown rendering comes via react-markdown later.
+
 // ============================================================================
-function MessageContent({ text, isStreaming }: { text: string; isStreaming: boolean }) {
+// MessageContent — рендерит текст сообщения.
+// ============================================================================
+// Phase 3: заменён stub-парсер (только code fences + inline code) на
+// MarkdownRenderer (react-markdown + remark-gfm).
+// Теперь поддерживаются: headings, lists, tables, blockquotes, links,
+// bold/italic, strikethrough, code blocks (с кнопкой copy).
+//
+// Для user-сообщений используем whitespace-pre-wrap (без markdown parsing) —
+// пользовательский ввод не должен интерпретироваться как markdown (безопасность).
+function MessageContent({ text, isStreaming, isUser }: { text: string; isStreaming: boolean; isUser: boolean }) {
   if (!text && isStreaming) {
     return <span className="text-text-dim italic">думаю…</span>;
   }
 
-  // Split by code fences
-  const parts = text.split(/```(\w*)\n?([\s\S]*?)```/g);
+  // User messages — plain text, no markdown (security: prevent interpretation)
+  if (isUser) {
+    return <div className="whitespace-pre-wrap break-words">{text}</div>;
+  }
 
-  return (
-    <div className="space-y-2">
-      {parts.map((part, i) => {
-        // Even indices = text, odd = lang, even+2 = code
-        if (i % 3 === 1) return null; // language tag — skip, handled in next iteration
-        if (i % 3 === 2) {
-          const lang = parts[i - 1] || 'text';
-          return <CodeBlock key={i} language={lang} code={part} />;
-        }
-        // Regular text — render paragraphs
-        if (!part.trim()) return null;
-        return (
-          <div key={i} className="whitespace-pre-wrap break-words">
-            {renderInline(part)}
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
-function renderInline(text: string) {
-  // Inline code with backticks
-  const parts = text.split(/(`[^`]+`)/g);
-  return parts.map((p, i) => {
-    if (p.startsWith('`') && p.endsWith('`')) {
-      return (
-        <code key={i} className="px-1.5 py-0.5 rounded bg-surface-2 text-xs font-mono text-accent">
-          {p.slice(1, -1)}
-        </code>
-      );
-    }
-    return <span key={i}>{p}</span>;
-  });
-}
-
-function CodeBlock({ language, code }: { language: string; code: string }) {
-  const trimmed = code.replace(/\n$/, '');
-  return (
-    <div className="rounded-md border border-border bg-background/50 overflow-hidden my-2">
-      <div className="px-3 py-1.5 border-b border-border bg-surface-2/50 flex items-center justify-between">
-        <span className="text-[10px] font-mono text-text-dim uppercase">{language}</span>
-        <button
-          onClick={() => navigator.clipboard.writeText(trimmed)}
-          className="text-[10px] text-text-dim hover:text-foreground transition-colors"
-        >
-          копировать
-        </button>
-      </div>
-      <pre className="p-3 overflow-x-auto text-xs font-mono leading-relaxed">
-        <code>{trimmed}</code>
-      </pre>
-    </div>
-  );
+  // Companion messages — full markdown
+  return <MarkdownRenderer content={text} />;
 }

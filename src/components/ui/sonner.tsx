@@ -1,14 +1,23 @@
 "use client"
 
-import { useTheme } from "next-themes"
 import { Toaster as Sonner, ToasterProps } from "sonner"
 
+/**
+ * Sonner Toaster.
+ *
+ * Тема зафиксирована как "light" — приложение "Лия v2" использует единую
+ * светлую палитру «Тёплый лён» (см. globals.css). Если понадобится тёмная
+ * тема, нужно:
+ *   1. Вернуть `next-themes` в deps и обернуть layout в <ThemeProvider>
+ *   2. Определить `.dark` селектор в globals.css с тёмной палитрой
+ *   3. Убрать `theme="light"` здесь, использовать `useTheme()` из next-themes
+ *
+ * До тех пор `next-themes` не нужен — это мёртвая зависимость.
+ */
 const Toaster = ({ ...props }: ToasterProps) => {
-  const { theme = "system" } = useTheme()
-
   return (
     <Sonner
-      theme={theme as ToasterProps["theme"]}
+      theme="light"
       className="toaster group"
       style={
         {

@@ -4,6 +4,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { listEpisodes, createEpisode } from '@/lib/memory/episodes';
 import { logger } from '@/lib/logger';
+import { parseBody, createEpisodeSchema } from '@/lib/infra/api-validation';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -20,10 +21,11 @@ export async function GET() {
 
 export async function POST(req: NextRequest) {
   try {
-    const body = await req.json().catch(() => ({}));
-    const title: string | undefined = body?.title;
+    const parsed = await parseBody(req, createEpisodeSchema);
+    if (!parsed.success) return parsed.response;
+    const { title } = parsed.data;
 
-    const episode = await createEpisode(typeof title === 'string' ? title : undefined);
+    const episode = await createEpisode(title);
     return NextResponse.json({ episode }, { status: 201 });
   } catch (e) {
     logger.error('api', 'POST failed', {}, e);

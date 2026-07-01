@@ -1,15 +1,27 @@
 'use client';
 
-import { useChatStore } from '@/stores/chat-store';
+import { useChatStore, type Episode } from '@/stores/chat-store';
 import { useEpisodes } from '@/hooks/use-episodes';
 import { Plus, MessageSquare, Trash2 } from 'lucide-react';
-import { useMemo } from 'react';
+import { useMemo, useState } from 'react';
 import { cn } from '@/lib/utils';
+import {
+  AlertDialog,
+  AlertDialogContent,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogDescription,
+  AlertDialogAction,
+  AlertDialogCancel,
+} from '@/components/ui/alert-dialog';
 
 export function EpisodesSidebar() {
   const episodes = useChatStore(s => s.episodes);
   const currentId = useChatStore(s => s.currentEpisodeId);
   const { create, select, remove } = useEpisodes();
+
+  // AlertDialog state — какой эпизод ожидает подтверждения удаления
+  const [deleteTarget, setDeleteTarget] = useState<Episode | null>(null);
 
   // Group by period
   const grouped = useMemo(() => groupEpisodesByPeriod(episodes), [episodes]);
@@ -17,6 +29,12 @@ export function EpisodesSidebar() {
   const handleNew = async () => {
     const ep = await create();
     if (ep) await select(ep.id);
+  };
+
+  const handleDelete = async () => {
+    if (!deleteTarget) return;
+    await remove(deleteTarget.id);
+    setDeleteTarget(null);
   };
 
   return (
@@ -79,10 +97,9 @@ export function EpisodesSidebar() {
                     <button
                       onClick={(e) => {
                         e.stopPropagation();
-                        if (confirm(`Удалить чат «${ep.title || 'Новый чат'}»?`)) {
-                          remove(ep.id);
-                        }
+                        setDeleteTarget(ep);
                       }}
+                      aria-label={`Удалить чат ${ep.title || 'Новый чат'}`}
                       className="opacity-0 group-hover:opacity-100 text-text-dim hover:text-destructive transition-all p-1 rounded hover:bg-surface"
                     >
                       <Trash2 className="w-3 h-3" />
@@ -94,22 +111,44 @@ export function EpisodesSidebar() {
           </div>
         )}
       </div>
+
+      {/* Delete confirmation — AlertDialog вместо confirm() */}
+      <AlertDialog open={deleteTarget !== null} onOpenChange={(open) => { if (!open) setDeleteTarget(null); }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Удалить чат?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Чат «{deleteTarget?.title || 'Новый чат'}» будет удалён безвозвратно.
+              Все сообщения и связанные воспоминания будут потеряны.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <div className="flex justify-end gap-2 mt-4">
+            <AlertDialogCancel>Отмена</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={handleDelete}
+              className="bg-destructive hover:bg-destructive/90"
+            >
+              Удалить
+            </AlertDialogAction>
+          </div>
+        </AlertDialogContent>
+      </AlertDialog>
     </aside>
   );
 }
 
 // ============================================================================
-// Grouping
+// Grouping — упрощённый тип (раньше был convoluted conditional type).
 // ============================================================================
-type GroupedEpisodes = { label: string; items: typeof useChatStore extends { getState: () => infer S } ? S extends { episodes: infer E } ? E : never : never };
+type GroupedEpisodes = { label: string; items: Episode[] };
 
-function groupEpisodesByPeriod(episodes: { id: string; title: string | null; createdAt: string; updatedAt: string; messageCount: number }[]) {
+function groupEpisodesByPeriod(episodes: Episode[]): GroupedEpisodes[] {
   const now = new Date();
   const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
   const startOfYesterday = startOfToday - 24 * 60 * 60 * 1000;
   const startOfWeek = startOfToday - 7 * 24 * 60 * 60 * 1000;
 
-  const groups: Record<string, typeof episodes> = {
+  const groups: Record<string, Episode[]> = {
     'Сегодня': [],
     'Вчера': [],
     'На этой неделе': [],
@@ -125,6 +164,6 @@ function groupEpisodesByPeriod(episodes: { id: string; title: string | null; cre
   }
 
   return Object.entries(groups)
-    .filter(([_, items]) => items.length > 0)
+    .filter(([, items]) => items.length > 0)
     .map(([label, items]) => ({ label, items }));
 }

@@ -12,6 +12,7 @@ const Live2DAvatar = dynamic(() => import('./live2d-avatar').then(m => m.Live2DA
 import { AgentPanel } from './agent-panel';
 import { RLPanel } from './rl-panel';
 import { CapabilityIndicator } from './capability-indicator';
+import { PanelErrorBoundary } from './panel-error-boundary';
 import { Sparkles, ChevronDown, Eye, EyeOff } from 'lucide-react';
 import { useState, useEffect, useCallback, type ReactNode } from 'react';
 import { dominantEmotion } from '@/lib/emotion';
@@ -165,10 +166,14 @@ export function AvatarColumn() {
         </div>
 
         {/* Agent tasks */}
-        <AgentPanel />
+        <PanelErrorBoundary fallbackTitle="Ошибка панели агента">
+          <AgentPanel />
+        </PanelErrorBoundary>
 
         {/* RL — обучаемая личность */}
-        <RLPanel />
+        <PanelErrorBoundary fallbackTitle="Ошибка панели обучения">
+          <RLPanel />
+        </PanelErrorBoundary>
 
         {/* Capability — текущий tier */}
         <CapabilityIndicator />

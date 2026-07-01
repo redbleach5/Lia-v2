@@ -10,6 +10,7 @@ import { join } from 'path';
 import { PATHS } from '@/lib/paths';
 import { randomUUID } from 'crypto';
 import { logger } from '@/lib/logger';
+import { parseBody, createAgentTaskSchema } from '@/lib/infra/api-validation';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -43,25 +44,9 @@ export async function GET(req: NextRequest) {
 
 export async function POST(req: NextRequest) {
   try {
-    const body = await req.json().catch(() => ({}));
-
-    const episodeId: string | undefined = body?.episodeId;
-    const goal: string | undefined = body?.goal;
-    const toolsWhitelist: string[] | undefined = body?.toolsWhitelist;
-    const fsScope: string | undefined = body?.fsScope;
-    const maxSteps: number | undefined = body?.maxSteps;
-    const maxDurationSec: number | undefined = body?.maxDurationSec;
-    const autoStart: boolean = body?.autoStart !== false; // default true
-
-    if (!episodeId) {
-      return NextResponse.json({ error: 'episodeId required' }, { status: 400 });
-    }
-    if (!goal || typeof goal !== 'string' || goal.trim().length === 0) {
-      return NextResponse.json({ error: 'goal required' }, { status: 400 });
-    }
-    if (goal.length > 10_000) {
-      return NextResponse.json({ error: 'goal too long (max 10000 chars)' }, { status: 413 });
-    }
+    const parsed = await parseBody(req, createAgentTaskSchema);
+    if (!parsed.success) return parsed.response;
+    const { episodeId, goal, autoStart, fsScope, toolsWhitelist, maxSteps, maxDurationSec } = parsed.data;
 
     // Get capability profile to set adaptive agent limits
     const { params: tierParams } = await getCognitiveParams();
@@ -85,7 +70,7 @@ export async function POST(req: NextRequest) {
     const task = await createAgentTask({
       episodeId,
       goal: goal.trim(),
-      toolsWhitelist: Array.isArray(toolsWhitelist) ? toolsWhitelist : null,
+      toolsWhitelist: toolsWhitelist ?? null,
       fsScope: finalFsScope,
       // Use tier-adaptive limits if not explicitly provided
       maxSteps: typeof maxSteps === 'number'

@@ -1,20 +1,16 @@
-'use client';
-
-import { useEffect } from 'react';
-import { useEpisodes } from '@/hooks/use-episodes';
-import { useHealth } from '@/hooks/use-health';
 import { EpisodesSidebar } from '@/components/lia/episodes-sidebar';
 import { ChatPanel } from '@/components/lia/chat-panel';
 import { AvatarColumn } from '@/components/lia/avatar-column';
 import { OllamaBanner } from '@/components/lia/ollama-banner';
-import { SettingsDialog } from '@/components/lia/settings-dialog';
+import { SettingsDialogLazy } from '@/components/lia/settings-dialog-lazy';
+import { ClientBootstrap } from '@/components/lia/client-bootstrap';
 
 export default function HomePage() {
-  useEpisodes();
-  useHealth();
-
   return (
     <div className="h-screen flex flex-col bg-background text-foreground">
+      {/* Mount-effect хуки (ensure-default episode, health check) */}
+      <ClientBootstrap />
+
       {/* Top bar */}
       <header className="h-12 border-b border-border flex items-center px-4 gap-3 shrink-0">
         <div className="flex items-center gap-2">
@@ -25,7 +21,7 @@ export default function HomePage() {
           <span className="text-[10px] text-text-dim font-mono">v2.0</span>
         </div>
         <div className="flex-1" />
-        <SettingsDialog />
+        <SettingsDialogLazy />
       </header>
 
       {/* Ollama connection banner */}

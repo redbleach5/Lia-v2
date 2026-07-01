@@ -1,3 +1,5 @@
+import 'server-only';
+
 // Fact extraction — извлечение фактов из диалога через LLM.
 //
 // Вызывается после каждого ответа Лии (в onFinish callback chat route).

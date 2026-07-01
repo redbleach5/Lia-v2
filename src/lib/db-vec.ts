@@ -1,3 +1,5 @@
+import 'server-only';
+
 // SQLite + sqlite-vec for vector ops.
 //
 // Architecture:
@@ -14,7 +16,6 @@
 import Database from 'better-sqlite3';
 import path from 'path';
 import { mkdirSync } from 'fs';
-import { randomUUID } from 'crypto';
 import { resolveSqliteVecPath, resolveDbPath } from '@/lib/paths';
 import { logger } from '@/lib/logger';
 
@@ -78,10 +79,16 @@ if (globalForVec.__vecDb) {
   globalForVec.__vecDb = db;
 }
 
-export { db as vecDb };
+// NOTE: `db` НЕ экспортируется напрямую. Все операции с vec index
+// проходят через функции-обёртки ниже (insertVectorMemory, searchVectorsInEpisode,
+// deleteVectorsInEpisode, insertEmotionalVectorIndex, searchEmotionalVectorsInEpisode,
+// deleteEmotionalVectorsByEpisodeId).
+// Это инкапсулирует vec0 virtual table и предотвращает прямой SQL-доступ
+// из других модулей (emotional-memory.ts раньше импортировал vecDb и писал
+// raw SQL — теперь использует обёртки).
 
 // ============================================================================
-// Vector operations
+// Vector operations — dialogue memory (VectorMemory table + vec_virtual index)
 // ============================================================================
 
 /**
@@ -92,19 +99,12 @@ export function packEmbedding(vec: Float32Array): Buffer {
 }
 
 /**
- * Unpack a BLOB back into a Float32Array.
- */
-export function unpackEmbedding(buf: Buffer): Float32Array {
-  return new Float32Array(buf.buffer, buf.byteOffset, buf.byteLength / 4);
-}
-
-/**
  * Insert a vector memory row.
  * Writes to BOTH VectorMemory (Prisma-managed, full data) AND vec_virtual (vec0 index).
  *
- * NOTE: caller must also insert into VectorMemory via Prisma to keep metadata.
- * This function only updates the vec0 index. For symmetry, we provide a combined
- * helper `insertVectorMemory` below that does both via the raw db.
+ * Все 3 записи обёрнуты в транзакцию better-sqlite3 — если любая падает,
+ * откатываются все. Решает проблему orphaned VectorMemory rows,
+ * которые не находятся векторным поиском, но учитываются в COUNT.
  */
 export function insertVectorMemory(params: {
   id: string;
@@ -114,32 +114,33 @@ export function insertVectorMemory(params: {
   embedding: Float32Array;
 }): void {
   const embeddingStr = `[${Array.from(params.embedding).join(',')}]`;
+  const rowid = hashToRowid(params.id);
 
-  // Insert into VectorMemory (raw SQL — Prisma schema has this table)
-  const stmt1 = db.prepare(`
-    INSERT INTO VectorMemory (id, episodeId, sourceType, text, embedding, ts)
-    VALUES (@id, @episodeId, @sourceType, @text, @embedding, datetime('now'))
-  `);
-  stmt1.run({
-    id: params.id,
-    episodeId: params.episodeId,
-    sourceType: params.sourceType,
-    text: params.text,
-    embedding: packEmbedding(params.embedding),
+  const txn = db.transaction(() => {
+    // 1. Insert into VectorMemory (raw SQL — Prisma schema has this table)
+    db.prepare(`
+      INSERT INTO VectorMemory (id, episodeId, sourceType, text, embedding, ts)
+      VALUES (@id, @episodeId, @sourceType, @text, @embedding, datetime('now'))
+    `).run({
+      id: params.id,
+      episodeId: params.episodeId,
+      sourceType: params.sourceType,
+      text: params.text,
+      embedding: packEmbedding(params.embedding),
+    });
+
+    // 2. Insert into vec_virtual index (using rowid = hash of id for stable mapping)
+    db.prepare(`
+      INSERT OR REPLACE INTO vec_virtual (rowid, embedding, episode_id, source_type)
+      VALUES (?, vec_f32(?), ?, ?)
+    `).run(rowid, embeddingStr, params.episodeId, params.sourceType);
+
+    // 3. Store mapping rowid → id so we can JOIN back
+    db.prepare(`INSERT OR REPLACE INTO vec_rowid_map (rowid, vector_id, episode_id) VALUES (?, ?, ?)`)
+      .run(rowid, params.id, params.episodeId);
   });
 
-  // Insert into vec_virtual index (using rowid = hash of id for stable mapping)
-  const rowid = hashToRowid(params.id);
-  const stmt2 = db.prepare(`
-    INSERT OR REPLACE INTO vec_virtual (rowid, embedding, episode_id, source_type)
-    VALUES (?, vec_f32(?), ?, ?)
-  `);
-  stmt2.run(rowid, embeddingStr, params.episodeId, params.sourceType);
-
-  // Store mapping rowid → id so we can JOIN back
-  // (vec_rowid_map table is created at init in db-vec.ts:70)
-  db.prepare(`INSERT OR REPLACE INTO vec_rowid_map (rowid, vector_id, episode_id) VALUES (?, ?, ?)`)
-    .run(rowid, params.id, params.episodeId);
+  txn();
 }
 
 /**
@@ -157,51 +158,44 @@ function hashToRowid(s: string): number {
 /**
  * Semantic search WITHIN a single episode — pre-filtered at SQL level.
  *
- * Uses vec0 KNN search with WHERE episode_id = ?.
+ * Uses vec0 KNN search with WHERE episode_id = ? (AND optionally source_type = ?).
  * Returns top-N matches with similarity (1 - distance).
+ *
+ * sourceType filter решает cross-contamination: без него recall(dialogue)
+ * мог вернуть emotional anchors, и наоборот. Теперь recall() в vector.ts
+ * передаёт sourceType='dialogue', recallEmotionalAnchors — 'emotional'.
  */
 export function searchVectorsInEpisode(params: {
   episodeId: string;
   queryEmbedding: Float32Array;
   limit?: number;
   minSimilarity?: number;
+  sourceType?: string;  // если задан — фильтрует по source_type в vec_virtual
 }): Array<{ id: string; sourceType: string; text: string; similarity: number }> {
-  const { episodeId, queryEmbedding, limit = 5, minSimilarity = 0.3 } = params;
+  const { episodeId, queryEmbedding, limit = 5, minSimilarity = 0.3, sourceType } = params;
   const embeddingStr = `[${Array.from(queryEmbedding).join(',')}]`;
 
-  // vec0 KNN search: MATCH with the query vector, ORDER BY distance, LIMIT
-  // We pre-filter by episode_id using a subquery on vec_rowid_map
-  // Actually, vec0 supports KNN with WHERE on metadata columns directly:
-  //
-  //   SELECT rowid, distance
-  //   FROM vec_virtual
-  //   WHERE episode_id = ?
-  //   AND embedding MATCH vec_f32(?)
-  //   ORDER BY distance
-  //   LIMIT ?
-  //
-  // But there's a quirk: in vec0, MATCH must come last in WHERE.
-  // The correct syntax:
-  //   WHERE episode_id = ? AND embedding MATCH ?
-  //
-  // distance is cosine distance (0=identical, 2=opposite). similarity = 1 - distance.
-
   try {
-    // vec0 requires LIMIT on the KNN query itself (not just SQL LIMIT)
-    // Format: ... MATCH ? AND k = ? ... or ... MATCH ? ORDER BY distance LIMIT ?
-    // The k constraint must be in the WHERE clause alongside MATCH
+    // vec0 KNN: MATCH должен идти последним в WHERE.
+    // source_type filter добавляется только если задан (иначе возвращаем все типы).
+    const sourceTypeClause = sourceType ? 'AND v.source_type = ?' : '';
     const stmt = db.prepare(`
       SELECT v.rowid, v.distance, m.vector_id as id
       FROM vec_virtual v
       JOIN vec_rowid_map m ON v.rowid = m.rowid
       WHERE m.episode_id = ?
+        ${sourceTypeClause}
         AND v.embedding MATCH vec_f32(?)
         AND v.k = ?
         AND v.distance <= ?
       ORDER BY v.distance
     `);
 
-    const rows = stmt.all(episodeId, embeddingStr, limit, 1 - minSimilarity) as Array<{
+    const bindParams: (string | number)[] = sourceType
+      ? [episodeId, sourceType, embeddingStr, limit, 1 - minSimilarity]
+      : [episodeId, embeddingStr, limit, 1 - minSimilarity];
+
+    const rows = stmt.all(...bindParams) as Array<{
       rowid: number;
       distance: number;
       id: string;
@@ -236,6 +230,7 @@ export function searchVectorsInEpisode(params: {
   } catch (e) {
     logger.warn('db', `Vector search failed`, {
       episodeId: episodeId.slice(0, 8),
+      sourceType: sourceType ?? 'any',
       limit,
       minSimilarity,
     }, e);
@@ -244,33 +239,129 @@ export function searchVectorsInEpisode(params: {
 }
 
 /**
- * Count vectors in an episode (for stats / debug).
- */
-export function countVectorsInEpisode(episodeId: string): number {
-  const row = db.prepare('SELECT COUNT(*) as c FROM VectorMemory WHERE episodeId = ?').get(episodeId) as { c: number };
-  return row.c;
-}
-
-/**
  * Delete all vectors for an episode.
- * Each step is wrapped in try/catch — tables may not exist if DB wasn't migrated.
+ *
+ * Все 3 DELETE обёрнуты в транзакцию — гарантирует консистентность:
+ * либо все vec_virtual + vec_rowid_map + VectorMemory записи удалены,
+ * либо ни одна (откат).
  */
 export function deleteVectorsInEpisode(episodeId: string): void {
-  try {
+  const txn = db.transaction(() => {
     const rowids = db.prepare('SELECT rowid FROM vec_rowid_map WHERE episode_id = ?').all(episodeId) as Array<{ rowid: number }>;
     if (rowids.length > 0) {
       const placeholders = rowids.map(() => '?').join(',');
       db.prepare(`DELETE FROM vec_virtual WHERE rowid IN (${placeholders})`).run(...rowids.map(r => r.rowid));
     }
-  } catch { /* vec tables may not exist yet */ }
+    db.prepare('DELETE FROM vec_rowid_map WHERE episode_id = ?').run(episodeId);
+    db.prepare('DELETE FROM VectorMemory WHERE episodeId = ?').run(episodeId);
+  });
 
-  try { db.prepare('DELETE FROM vec_rowid_map WHERE episode_id = ?').run(episodeId); } catch { /* */ }
-  try { db.prepare('DELETE FROM VectorMemory WHERE episodeId = ?').run(episodeId); } catch { /* Prisma table may not exist */ }
+  try {
+    txn();
+  } catch (e) {
+    // Таблицы могут не существовать если DB не мигрирована — логируем, но не падаем.
+    logger.warn('db', 'deleteVectorsInEpisode failed (non-fatal)', { episodeId: episodeId.slice(0, 8) }, e);
+  }
+}
+
+// ============================================================================
+// Emotional memory vec operations — для emotional-memory.ts.
+// ============================================================================
+//
+// Emotional anchors хранятся в Prisma EmotionalMemory table (полные данные),
+// но индексируются в vec_virtual с source_type='emotional' для семантического поиска.
+// vector_id имеет префикс "emo:" чтобы отличать от dialogue vectors.
+//
+// Раньше emotional-memory.ts импортировал vecDb напрямую и писал raw SQL.
+// Теперь использует эти обёртки — инкапсуляция vec0 virtual table.
+
+/**
+ * Insert emotional anchor into vec_virtual index (atomic, transactional).
+ * vector_id должен иметь префикс "emo:" для отличия от dialogue vectors.
+ */
+export function insertEmotionalVectorIndex(params: {
+  vectorId: string;  // "emo:<cuid>"
+  episodeId: string;
+  embedding: Float32Array;
+}): void {
+  const embeddingStr = `[${Array.from(params.embedding).join(',')}]`;
+  const rowid = hashToRowid(params.vectorId);
+
+  const txn = db.transaction(() => {
+    db.prepare(`
+      INSERT OR REPLACE INTO vec_virtual (rowid, embedding, episode_id, source_type)
+      VALUES (?, vec_f32(?), ?, 'emotional')
+    `).run(rowid, embeddingStr, params.episodeId);
+
+    db.prepare(`INSERT OR REPLACE INTO vec_rowid_map (rowid, vector_id, episode_id) VALUES (?, ?, ?)`)
+      .run(rowid, params.vectorId, params.episodeId);
+  });
+
+  txn();
 }
 
 /**
- * Generate a UUID.
+ * Search emotional anchors in vec_virtual index (source_type='emotional').
+ * Возвращает array of { vectorId, distance } — caller делает JOIN с Prisma
+ * EmotionalMemory table для полных данных.
  */
-export function generateId(): string {
-  return randomUUID();
+export function searchEmotionalVectorsInEpisode(params: {
+  episodeId: string;
+  queryEmbedding: Float32Array;
+  limit: number;
+  maxDistance?: number;
+}): Array<{ vectorId: string; distance: number }> {
+  const { episodeId, queryEmbedding, limit, maxDistance = 0.9 } = params;
+  const embeddingStr = `[${Array.from(queryEmbedding).join(',')}]`;
+
+  try {
+    const rows = db.prepare(`
+      SELECT v.rowid, v.distance, m.vector_id as id
+      FROM vec_virtual v
+      JOIN vec_rowid_map m ON v.rowid = m.rowid
+      WHERE m.episode_id = ?
+        AND v.source_type = 'emotional'
+        AND v.embedding MATCH vec_f32(?)
+        AND v.k = ?
+        AND v.distance <= ?
+      ORDER BY v.distance
+    `).all(episodeId, embeddingStr, limit, maxDistance) as Array<{
+      rowid: number;
+      distance: number;
+      id: string;
+    }>;
+
+    return rows.map(r => ({ vectorId: r.id, distance: r.distance }));
+  } catch (e) {
+    logger.warn('db', 'searchEmotionalVectorsInEpisode failed', { episodeId: episodeId.slice(0, 8) }, e);
+    return [];
+  }
 }
+
+/**
+ * Delete emotional vectors for an episode (vec_virtual + vec_rowid_map only).
+ * EmotionalMemory Prisma rows удаляются отдельно через cascade или явный delete.
+ * Используется при deleteEpisode.
+ */
+export function deleteEmotionalVectorsByEpisodeId(episodeId: string): void {
+  const txn = db.transaction(() => {
+    const rowids = db.prepare(`
+      SELECT v.rowid FROM vec_virtual v
+      JOIN vec_rowid_map m ON v.rowid = m.rowid
+      WHERE m.episode_id = ? AND v.source_type = 'emotional'
+    `).all(episodeId) as Array<{ rowid: number }>;
+
+    if (rowids.length > 0) {
+      const placeholders = rowids.map(() => '?').join(',');
+      db.prepare(`DELETE FROM vec_virtual WHERE rowid IN (${placeholders})`).run(...rowids.map(r => r.rowid));
+    }
+    db.prepare('DELETE FROM vec_rowid_map WHERE episode_id = ?').run(episodeId);
+  });
+
+  try {
+    txn();
+  } catch (e) {
+    logger.warn('db', 'deleteEmotionalVectorsByEpisodeId failed (non-fatal)', { episodeId: episodeId.slice(0, 8) }, e);
+  }
+}
+

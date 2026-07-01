@@ -43,7 +43,7 @@ export const PATHS = {
  *   - absolute (returned as-is, normalized)
  *   - relative (resolved against PROJECT_ROOT)
  */
-export function resolveProjectPath(p: string): string {
+function resolveProjectPath(p: string): string {
   if (path.isAbsolute(p)) return path.normalize(p);
   return path.join(PROJECT_ROOT, p);
 }

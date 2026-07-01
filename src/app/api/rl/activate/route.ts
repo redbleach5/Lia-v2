@@ -4,18 +4,16 @@ import { NextRequest, NextResponse } from 'next/server';
 import { db } from '@/lib/db';
 import { reloadModel } from '@/lib/rl/inference';
 import { logger } from '@/lib/logger';
+import { parseBody, rlActivateSchema } from '@/lib/infra/api-validation';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 export async function POST(req: NextRequest) {
   try {
-    const body = await req.json().catch(() => ({}));
-    const version: number | undefined = body?.version;
-
-    if (typeof version !== 'number' || version < 1) {
-      return NextResponse.json({ error: 'version required' }, { status: 400 });
-    }
+    const parsed = await parseBody(req, rlActivateSchema);
+    if (!parsed.success) return parsed.response;
+    const { version } = parsed.data;
 
     // Save to DB
     await db.setting.upsert({

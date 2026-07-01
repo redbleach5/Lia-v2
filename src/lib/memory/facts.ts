@@ -1,3 +1,5 @@
+import 'server-only';
+
 // Facts — global profile + episode-scoped context.
 //
 // ГЛОБАЛЬНЫЕ факты (GlobalFact) — переживают смену чата:
@@ -11,11 +13,6 @@ import { db } from '@/lib/db';
 // ============================================================================
 // Global facts — профиль пользователя
 // ============================================================================
-export async function getGlobalFact(key: string): Promise<string | null> {
-  const row = await db.globalFact.findUnique({ where: { key } });
-  return row?.value ?? null;
-}
-
 export async function getAllGlobalFacts(): Promise<Array<{ key: string; value: string; confidence: number }>> {
   const rows = await db.globalFact.findMany({
     orderBy: { key: 'asc' },

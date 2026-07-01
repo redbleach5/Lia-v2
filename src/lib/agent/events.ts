@@ -1,3 +1,5 @@
+import 'server-only';
+
 // Agent events — singleton EventEmitter для real-time обновлений UI.
 //
 // Runner эмитит события, SSE-эндпоинт подписывается и стримит клиенту.
@@ -87,14 +89,33 @@ export function clearBuffer(taskId: string) {
 // ============================================================================
 // Cancellation signals — in-process. Set when user cancels a task.
 // ============================================================================
-const cancelledTasks = new Set<string>();
+// TTL: cleared automatically 1h after signalCancellation, чтобы Set не рос бесконечно.
+// 1h достаточно, чтобы runner заметил cancel, но не настолько долго, чтобы
+// накопились сотни устаревших ID.
+const cancelledTasks = new Map<string, number>(); // taskId → cancelledAt timestamp
+const CANCELLATION_TTL_MS = 60 * 60 * 1000; // 1 час
 
 export function signalCancellation(taskId: string) {
-  cancelledTasks.add(taskId);
+  cancelledTasks.set(taskId, Date.now());
+  // Запускаем cleanup только если Map ещё не очищался недавно.
+  // Простой подход: при каждом signalCancellation проверяем expired записи.
+  const now = Date.now();
+  for (const [id, ts] of cancelledTasks) {
+    if (now - ts > CANCELLATION_TTL_MS) {
+      cancelledTasks.delete(id);
+    }
+  }
 }
 
 export function isCancelled(taskId: string): boolean {
-  return cancelledTasks.has(taskId);
+  const ts = cancelledTasks.get(taskId);
+  if (!ts) return false;
+  // Ленивая очистка при чтении
+  if (Date.now() - ts > CANCELLATION_TTL_MS) {
+    cancelledTasks.delete(taskId);
+    return false;
+  }
+  return true;
 }
 
 export function clearCancellation(taskId: string) {

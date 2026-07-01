@@ -1,3 +1,5 @@
+import 'server-only';
+
 // RL types — shared between Python sidecar and Next.js.
 //
 // Must match python-sidecar/rl/model.py:DEFAULT_ACTIONS

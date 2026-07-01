@@ -34,9 +34,10 @@ export async function POST(
       return NextResponse.json({ error: `task already ${task.status}` }, { status: 400 });
     }
 
-    // Reset to pending if was waiting_input (resume case)
+    // Reset to pending if was waiting_input or failed (resume case).
+    // Phase 4.1: если есть checkpoint — runner пропустит PLAN и продолжит с steps.length.
     if (task.status === 'waiting_input' || task.status === 'failed') {
-      await updateAgentTask(id, { status: 'pending', error: undefined });
+      await updateAgentTask(id, { status: 'pending', error: null });
     }
 
     // Trigger runner in background — don't await

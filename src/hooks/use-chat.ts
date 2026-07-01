@@ -4,11 +4,22 @@
 //
 // Streaming protocol (plain text):
 //   - Body is a stream of UTF-8 text chunks
-//   - Response headers carry metadata: X-Message-Id, X-Triggers, X-Emotion
+//   - Response headers carry metadata: X-Message-Id, X-Triggers, X-Emotion-B64
 //   - No delimiter in body — stream ends when response closes
 //
 // For agent mode: instead of streaming chat, creates an AgentTask via /api/agent
 // and the UI subscribes to /api/agent/[id]/stream for real-time updates.
+//
+// NOTE (Phase 3): миграция на @ai-sdk/react useChat отложена.
+// Текущий backend использует plain text streaming (result.toTextStreamResponse),
+// а useChat ожидает UI Message Stream protocol (toUIMessageStreamResponse).
+// Миграция потребует:
+//   1. Замены toTextStreamResponse → toUIMessageStreamResponse в lib/chat/pipeline.ts
+//   2. Переноса emotion/metadata из headers в data parts stream'а
+//   3. Адаптации ChatMessage type к UIMessage (parts-based)
+//   4. Перепроверки agent-mode логики (создание AgentTask вне streaming)
+// Это значительное изменение протокола — рискованно в рамках Phase 3.
+// Отложено до отдельной фазы после стабилизации архитектуры.
 
 import { useCallback, useRef } from 'react';
 import { useChatStore, type ChatMessage, type ChatMode } from '@/stores/chat-store';
@@ -32,7 +43,7 @@ export function useChat() {
     if (mode === 'agent') {
       // Save user message to UI
       const userMsg: ChatMessage = {
-        id: `tmp-user-${Date.now()}`,
+        id: crypto.randomUUID(),
         role: 'user',
         content: text,
         createdAt: Date.now(),
@@ -77,14 +88,16 @@ export function useChat() {
     }
 
     // ── FAST / STANDARD: streaming chat ──
+    // Phase 6.2: используем crypto.randomUUID() вместо Date.now() для уникальности.
+    // Date.now() мог дать одинаковые ID при быстрых сообщениях (разница <1ms).
     const userMsg: ChatMessage = {
-      id: `tmp-user-${Date.now()}`,
+      id: crypto.randomUUID(),
       role: 'user',
       content: text,
       createdAt: Date.now(),
     };
     const liaMsg: ChatMessage = {
-      id: `tmp-lia-${Date.now()}`,
+      id: crypto.randomUUID(),
       role: 'companion',
       content: '',
       streaming: true,
@@ -119,22 +132,21 @@ export function useChat() {
         throw new Error('no response body');
       }
 
-      // Read emotion from headers
-      // Заголовки с non-ASCII (русский текст) закодированы в base64 на сервере.
-      // Декодируем обратно в UTF-8 строку перед JSON.parse.
-      const decodeHeader = (s: string | null): string | null => {
+      // Read emotion + metadata from headers.
+      // Заголовки с суффиксом -B64 закодированы в base64 (non-ASCII: русский текст, JSON).
+      // Остальные — plain ASCII, читаются как есть.
+      const decodeB64 = (s: string | null): string | null => {
         if (!s) return null;
         try {
-          // atob декодирует base64 в binary string, TextDecoder — в UTF-8
           const binary = atob(s);
           const bytes = Uint8Array.from(binary, c => c.charCodeAt(0));
           return new TextDecoder().decode(bytes);
         } catch {
-          return s; // если декодирование не удалось — возвращаем как есть
+          return s;
         }
       };
 
-      const emotionHeader = decodeHeader(res.headers.get('X-Emotion'));
+      const emotionHeader = decodeB64(res.headers.get('X-Emotion-B64'));
       if (emotionHeader) {
         try {
           const emotion = JSON.parse(emotionHeader);
@@ -142,9 +154,8 @@ export function useChat() {
         } catch { /* ignore */ }
       }
 
-      // Read metadata headers — логируем для отладки и будущий UI.
-      // Сервер шлёт: X-Tier, X-Complexity, X-Mode, X-Calls, X-Deliberate,
-      // X-SelfCheck, X-ModelSize, X-Disagreement, X-RL-Action, X-RL-Confidence.
+      // Metadata — логируется только при наличии RL action (полезно для отладки RL).
+      // Раньше логировалось каждый раз + decodeHeader портил ASCII заголовки.
       const meta = {
         tier: res.headers.get('X-Tier'),
         complexity: res.headers.get('X-Complexity'),
@@ -153,8 +164,8 @@ export function useChat() {
         deliberate: res.headers.get('X-Deliberate'),
         selfCheck: res.headers.get('X-SelfCheck'),
         modelSize: res.headers.get('X-ModelSize'),
-        disagreement: decodeHeader(res.headers.get('X-Disagreement')),
-        rlAction: decodeHeader(res.headers.get('X-RL-Action')),
+        disagreement: decodeB64(res.headers.get('X-Disagreement-B64')),
+        rlAction: decodeB64(res.headers.get('X-RL-Action-B64')),
         rlConfidence: res.headers.get('X-RL-Confidence'),
       };
       if (meta.rlAction && meta.rlAction !== 'none') {

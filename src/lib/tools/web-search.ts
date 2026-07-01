@@ -1,8 +1,10 @@
+import 'server-only';
+
 // web_search — DuckDuckGo HTML scraping (no API key required).
 // + fetch_page — чтение содержимого веб-страницы с извлечением текста.
 
-import { db } from '@/lib/db';
 import { logger } from '@/lib/logger';
+import { assertSafeUrl, assertSafeHost } from '@/lib/infra/ssrf';
 
 type SearchResult = {
   title: string;
@@ -45,15 +47,6 @@ export async function webSearch(query: string): Promise<{
       resultsCount: results.length,
     });
 
-    // Log search for analytics
-    try {
-      await db.setting.upsert({
-        where: { key: 'last_web_search' },
-        create: { key: 'last_web_search', value: JSON.stringify({ query, count: results.length, ts: Date.now() }) },
-        update: { value: JSON.stringify({ query, count: results.length, ts: Date.now() }) },
-      });
-    } catch { /* non-fatal */ }
-
     return { query, results, count: results.length };
   } catch (e) {
     logger.warn('tools', `web_search failed`, { query: query.slice(0, 80) }, e);
@@ -69,6 +62,9 @@ export async function webSearch(query: string): Promise<{
  *
  * Используется агентом после web_search для чтения конкретных страниц
  * (API-документация, туториалы, примеры кода).
+ *
+ * SSRF-защита: URL проверяется через assertSafeUrl перед fetch.
+ * Redirects обрабатываются вручную — каждый target перепроверяется.
  */
 export async function fetchPage(url: string, maxChars = 5000): Promise<{
   url: string;
@@ -81,15 +77,41 @@ export async function fetchPage(url: string, maxChars = 5000): Promise<{
   logger.debug('tools', `fetch_page: ${url.slice(0, 100)}`, { maxChars });
 
   try {
-    const res = await fetch(url, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-        'Accept': 'text/html,application/xhtml+xml,application/xml',
-        'Accept-Language': 'ru-RU,ru;q=0.9,en;q=0.8',
-      },
-      signal: AbortSignal.timeout(20_000),
-      redirect: 'follow',
-    });
+    // SSRF check — проверяем исходный URL перед первым запросом
+    await assertSafeUrl(url);
+
+    // Manual redirect following — перепроверяем каждый redirect target
+    let currentUrl = url;
+    let redirectCount = 0;
+    const MAX_REDIRECTS = 5;
+    let res: Response;
+
+    while (true) {
+      res = await fetch(currentUrl, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+          'Accept': 'text/html,application/xhtml+xml,application/xml',
+          'Accept-Language': 'ru-RU,ru;q=0.9,en;q=0.8',
+        },
+        signal: AbortSignal.timeout(20_000),
+        redirect: 'manual',
+      });
+
+      // Check for redirect
+      if (res.status >= 300 && res.status < 400) {
+        const location = res.headers.get('location');
+        if (!location) break;
+        if (++redirectCount > MAX_REDIRECTS) {
+          return { url, title: '', text: '', truncated: false, error: `too many redirects (max ${MAX_REDIRECTS})` };
+        }
+        const redirectUrl = new URL(location, currentUrl);
+        // SSRF check on redirect target
+        await assertSafeHost(redirectUrl.hostname);
+        currentUrl = redirectUrl.toString();
+        continue;
+      }
+      break;
+    }
 
     if (!res.ok) {
       logger.warn('tools', `fetch_page HTTP error`, { url: url.slice(0, 100), status: res.status });
@@ -221,21 +243,13 @@ function extractReadableText(html: string, maxChars: number): { title: string; t
 function parseDuckDuckGoHtml(html: string): SearchResult[] {
   const results: SearchResult[] = [];
 
-  // Match each result block. DuckDuckGo HTML structure:
-  // <div class="result">
-  //   <a class="result__a" href="//duckduckgo.com/l/?uddg=ENCODED_URL">Title</a>
-  //   <a class="result__snippet">Snippet text</a>
-  // </div>
-
-  const resultRegex = /<div[^>]*class="[^"]*result[^"]*"[^>]*>([\s\S]*?)<\/div>\s*<\/div>/g;
-  const linkRegex = /<a[^>]*class="[^"]*result__a[^"]*"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/;
+  // Simpler approach: find all result__a links
+  const linkOnlyRegex = /<a[^>]*class="[^"]*result__a[^"]*"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/g;
   const snippetRegex = /<a[^>]*class="[^"]*result__snippet[^"]*"[^>]*>([\s\S]*?)<\/a>/;
 
   let match: RegExpExecArray | null;
   const seenUrls = new Set<string>();
 
-  // Simpler approach: find all result__a links
-  const linkOnlyRegex = /<a[^>]*class="[^"]*result__a[^"]*"[^>]*href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/g;
   while ((match = linkOnlyRegex.exec(html)) && results.length < 10) {
     let href = match[1];
     const titleHtml = match[2];

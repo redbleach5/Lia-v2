@@ -1,3 +1,5 @@
+import 'server-only';
+
 // RL inference client — loads ONNX model via onnxruntime-node.
 //
 // Production path:
@@ -19,6 +21,7 @@ import { logger } from '@/lib/logger';
 // Sidecar config
 // ============================================================================
 const SIDECAR_URL = process.env.RL_SIDECAR_URL || 'http://127.0.0.1:8765';
+const SIDECAR_API_KEY = process.env.LIA_SIDECAR_API_KEY;
 
 // Path to Python sidecar models dir — typically <project>/python-sidecar/models/
 const SIDECAR_MODELS_DIR = path.join(PATHS.root, 'python-sidecar', 'models');
@@ -66,7 +69,10 @@ async function ensureSession(version: number | null = null): Promise<boolean> {
   }
 
   try {
-    // onnxruntime-node needs the model as a Buffer
+    // onnxruntime-node needs the model as a Buffer.
+    // Phase 1 fix: ждём, пока файл стабилизируется (размер не меняется 500мс),
+    // чтобы не прочитать partially-written .onnx после atomic rename из Python.
+    await waitForStableFile(resolved.path, 500);
     const modelBuffer = readFileSync(resolved.path);
     session = await ort.InferenceSession.create(modelBuffer);
     loadedVersion = resolved.version;
@@ -74,8 +80,40 @@ async function ensureSession(version: number | null = null): Promise<boolean> {
     return true;
   } catch (e) {
     logger.error('rl', 'Failed to load ONNX model', {}, e);
+    session = null;
+    loadedVersion = null;
     return false;
   }
+}
+
+/**
+ * Подождать, пока файл стабилизируется (размер не меняется в течение `stableMs`).
+ * Решает race condition: Python sidecar пишет .onnx через .tmp + rename,
+ * но если Next.js вызовет reloadModel() сразу после train, может попасть
+ * на момент сразу после rename, когда файл ещё дозаписывается.
+ *
+ * Таймаут 5s — если файл не стабилизируется, читаем как есть (best effort).
+ */
+async function waitForStableFile(filePath: string, stableMs: number): Promise<void> {
+  const deadline = Date.now() + 5000;
+  let lastSize = -1;
+  let lastSizeTime = Date.now();
+  while (Date.now() < deadline) {
+    try {
+      const stat = await import('fs/promises').then(m => m.stat(filePath));
+      if (stat.size === lastSize) {
+        if (Date.now() - lastSizeTime >= stableMs) return; // стабильно
+      } else {
+        lastSize = stat.size;
+        lastSizeTime = Date.now();
+      }
+    } catch {
+      // Файл ещё не существует — подождём
+    }
+    await new Promise(r => setTimeout(r, 100));
+  }
+  // Таймаут — читаем как есть
+  logger.warn('rl', 'ONNX file did not stabilize in 5s, loading anyway', { path: filePath });
 }
 
 // ============================================================================
@@ -140,16 +178,12 @@ export async function predictAction(state: number[], version: number | null = nu
       version: loadedVersion,
     };
   } catch (e) {
+    // Phase 1 fix: при ошибке inference возвращаем version: null, а не loadedVersion.
+    // Раньше это приводило к багу: rlModelLoaded в chat route был true даже при ошибке,
+    // fallback heuristic не запускался.
     logger.error('rl', 'prediction failed', {}, e);
-    return { action: 0, actionName: RL_ACTIONS[0], confidence: 0, value: 0, version: loadedVersion };
+    return { action: 0, actionName: RL_ACTIONS[0], confidence: 0, value: 0, version: null };
   }
-}
-
-/**
- * Get the currently active model version.
- */
-export function getActiveVersion(): number | null {
-  return loadedVersion;
 }
 
 /**
@@ -164,11 +198,24 @@ export async function reloadModel(version: number | null = null): Promise<boolea
 // ============================================================================
 // Sidecar HTTP client — for training/stats (not for per-action inference)
 // ============================================================================
-async function sidecarFetch(path: string, options?: RequestInit): Promise<Response> {
-  const url = `${SIDECAR_URL}${path}`;
+// Phase 1 fixes:
+//   1. Configurable timeout: 30s для stats, 300s для train (раньше 120s для всего,
+//      что приводило к timeout при обучении, хотя сам train на sidecar продолжался).
+//   2. X-Sidecar-Key header для auth (см. python-sidecar/main.py auth middleware).
+async function sidecarFetch(
+  urlPath: string,
+  options: RequestInit = {},
+  timeoutMs = 30_000,
+): Promise<Response> {
+  const url = `${SIDECAR_URL}${urlPath}`;
+  const headers = new Headers(options.headers);
+  if (SIDECAR_API_KEY) {
+    headers.set('X-Sidecar-Key', SIDECAR_API_KEY);
+  }
   return fetch(url, {
     ...options,
-    signal: AbortSignal.timeout(120_000), // training can take a while
+    headers,
+    signal: AbortSignal.timeout(timeoutMs),
   });
 }
 
@@ -178,7 +225,8 @@ export async function getSidecarStats(): Promise<{
   error?: string;
 }> {
   try {
-    const res = await sidecarFetch('/stats');
+    // /stats — быстрый endpoint, 30s таймаут достаточно.
+    const res = await sidecarFetch('/stats', {}, 30_000);
     if (!res.ok) {
       return { ok: false, error: `HTTP ${res.status}` };
     }
@@ -198,6 +246,8 @@ export async function trainSidecar(params: {
   error?: string;
 }> {
   try {
+    // /train — долгий endpoint (PPO обучение), 300s таймаут.
+    // Соответствует maxDuration = 300 в rl/train/route.ts.
     const res = await sidecarFetch('/train', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -205,13 +255,13 @@ export async function trainSidecar(params: {
         n_epochs: params.nEpochs ?? 10,
         parent_version: params.parentVersion ?? null,
       }),
-    });
+    }, 300_000);
     if (!res.ok) {
       const err = await res.json().catch(() => ({ detail: `HTTP ${res.status}` }));
       return { ok: false, error: err.detail ?? `HTTP ${res.status}` };
     }
     const result = await res.json();
-    // Reload model after training
+    // Reload model after training — ждёт стабилизации файла (см. waitForStableFile).
     await reloadModel();
     return { ok: true, result };
   } catch (e) {

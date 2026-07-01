@@ -1,3 +1,5 @@
+import 'server-only';
+
 // RL experience recorder — writes (state, action, reward, next_state) to DB.
 //
 // Called by the message handler after each user message:
@@ -66,10 +68,10 @@ export async function completeExperience(id: string, params: {
   signals: RLRewardSignals;
 }): Promise<void> {
   try {
-    // ВАЖНО: reward ДОБАВЛЯЕТСЯ к существующему, не перезаписывает.
-    // Self-check мог уже записать penalty (negative reward) в поле reward.
-    // computeRewardLocally вычисляет reward на основе поведения пользователя
-    // (latency, length, sentiment). Финальный reward = behavior_reward + quality_penalty.
+    // Phase 5.2: reward больше не вычисляется на TS стороне.
+    // completeExperience вызывается с reward=0. Self-check мог уже записать
+    // penalty (negative reward) в поле reward через прямой db.rLExperience.update.
+    // Финальный reward для training вычисляется Python train.py из raw signals.
     const existing = await db.rLExperience.findUnique({ where: { id }, select: { reward: true } });
     const existingReward = existing?.reward ?? 0;
     const finalReward = existingReward + params.reward;
@@ -141,62 +143,17 @@ export async function countExperiences(): Promise<number> {
   return db.rLExperience.count();
 }
 
-/**
- * Compute reward locally — uses the same formula as Python sidecar.
- * This is for preview only; the actual training uses the Python reward.py
- * which the user can edit.
- */
-export function computeRewardLocally(signals: RLRewardSignals, actionId: number): number {
-  let reward = 0;
-
-  if (signals.userResponded) reward += 0.3;
-  else reward -= 0.5;
-
-  if (signals.userResponded) {
-    if (signals.responseLatencySec < 60) reward += 0.2;
-    else if (signals.responseLatencySec > 3600) reward -= 0.1;
-  }
-
-  if (signals.messageLength > 10) reward += 0.1;
-  if (signals.messageLength > 100) reward += 0.1;
-  if (signals.messageLength > 500) reward -= 0.1;
-
-  if (signals.wasRepeated) reward -= 0.2;
-
-  if (signals.irritationDelta > 0) reward -= 0.5 * signals.irritationDelta;
-  else if (signals.irritationDelta < 0) reward += 0.2 * Math.abs(signals.irritationDelta);
-
-  // Simple sentiment
-  const sentiment = estimateSentiment(signals.userMessage);
-  reward += 0.3 * sentiment;
-
-  if (actionId === 0) reward -= 0.1;
-  else if (actionId === 3 && signals.userResponded && signals.messageLength > 20) reward += 0.1;
-  else if (actionId === 7 && signals.responseLatencySec < 30 && signals.userResponded) reward += 0.05;
-
-  return reward;
-}
-
-// Simple sentiment — must match python-sidecar/rl/reward.py:estimate_user_sentiment
-const POSITIVE_WORDS = new Set([
-  'спасибо', 'благодарю', 'класс', 'супер', 'круто', 'отлично', 'хорошо',
-  'обожаю', 'потрясающе', 'шикарно', 'да', 'конечно', 'согласен', 'согласна',
-  'thanks', 'great', 'awesome', 'perfect', 'yes', 'agree', 'love',
-]);
-const NEGATIVE_WORDS = new Set([
-  'нет', 'не', 'плохо', 'ужасно', 'бесит', 'раздражает', 'надоел', 'хватит',
-  'отстань', 'не хочу', 'не буду', 'скучно', 'ерунда', 'чушь', 'бред',
-  'no', 'bad', 'terrible', 'boring', 'stop', 'enough', 'stupid',
-]);
-
-function estimateSentiment(text: string): number {
-  if (!text) return 0;
-  const words = new Set(text.toLowerCase().replace(/[,.\!?]/g, ' ').split(/\s+/));
-  let pos = 0, neg = 0;
-  for (const w of words) {
-    if (POSITIVE_WORDS.has(w)) pos++;
-    if (NEGATIVE_WORDS.has(w)) neg++;
-  }
-  if (pos + neg === 0) return 0;
-  return (pos - neg) / (pos + neg);
-}
+// Phase 5.2: computeRewardLocally удалён.
+// Раньше reward вычислялся на TS стороне (дубликат python-sidecar/rl/reward.py)
+// и сохранялся в RLExperience.reward. Но Python train.py ВСЕГДА пересчитывает
+// reward из raw signals (см. train.py:129-130: compute_reward(Transition(...))).
+// Stored reward не использовался для training — только для UI stats.
+//
+// Теперь: completeExperience вызывается с reward=0. Self-check может добавить
+// penalty через прямой db.rLExperience.update (см. pipeline.ts persistResponse).
+// Финальный reward для training вычисляется Python'ом из signals.
+// UI stats показывают avg_reward из Python TrainResult (актуальный посчитанный).
+//
+// Это устраняет дублирование логики между TS и Python — Python единственный
+// source of truth для reward. Пользователь может редактировать reward.py
+// и изменения применятся при следующем training без правок TS кода.

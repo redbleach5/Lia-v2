@@ -48,6 +48,7 @@ class TransitionRecord:
     was_repeated: bool
     irritation_delta: float
     user_message: str
+    episode_id: Optional[str] = None
 
 
 def resolve_db_path(db_url: Optional[str] = None) -> str:
@@ -85,6 +86,8 @@ def load_transitions(db_path: Optional[str] = None, limit: int = 10000) -> list[
 
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
+    # Phase 1 fix: busy_timeout чтобы избежать SQLITE_BUSY при конкуренции с Next.js.
+    conn.execute("PRAGMA busy_timeout = 5000")
     try:
         # Check if RLExperience table exists
         cursor = conn.execute(
@@ -96,14 +99,17 @@ def load_transitions(db_path: Optional[str] = None, limit: int = 10000) -> list[
                 "create the schema (bun run db:push)."
             )
 
+        # Phase 1 fix: ORDER BY createdAt ASC (не DESC) — GAE требует хронологический порядок.
+        # Раньше DESC разворачивал последовательность, и last_gae
+        # распространялся в обратном направлении.
         cursor = conn.execute(
             """
             SELECT stateJson, action, reward, nextStateJson,
                    userResponded, responseLatencySec, messageLength,
-                   wasRepeated, irritationDelta, userMessage
+                   wasRepeated, irritationDelta, userMessage, episodeId
             FROM RLExperience
             WHERE userResponded = 1
-            ORDER BY createdAt DESC
+            ORDER BY createdAt ASC
             LIMIT ?
             """,
             (limit,),
@@ -128,6 +134,7 @@ def load_transitions(db_path: Optional[str] = None, limit: int = 10000) -> list[
                 was_repeated=bool(row["wasRepeated"]),
                 irritation_delta=float(row["irritationDelta"] or 0),
                 user_message=row["userMessage"] or "",
+                episode_id=row["episodeId"] if "episodeId" in row.keys() else None,
             ))
 
         return transitions
@@ -142,6 +149,7 @@ def count_transitions(db_path: Optional[str] = None) -> int:
         return 0
 
     conn = sqlite3.connect(path)
+    conn.execute("PRAGMA busy_timeout = 5000")
     try:
         cursor = conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='RLExperience'"

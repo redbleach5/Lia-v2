@@ -1,3 +1,5 @@
+import 'server-only';
+
 // AgentTask — CRUD для агентских задач.
 //
 // Жизненный цикл:
@@ -6,9 +8,9 @@
 //              [failed]     [cancelled]     [cancelled]       [cancelled]
 //
 // Runner реализован в runner.ts (ReAct-loop с tool calling).
-// Resume после рестарта: при старте сервера sweeper помечает transient-статусы
-// как failed (см. sweepStaleTasks в runner.ts). Полный resume с checkpointJson
-// требует persistent queue (Inngest/BullMQ) — пока не реализован.
+// Resume после рестарта (Phase 4.1): sweeper сбрасывает executing+checkpoint
+// задачи в pending, runner при следующем /start пропускает PLAN и продолжает
+// с steps.length (см. sweepStaleTasks и checkpointJson в runner.ts).
 
 import { db } from '@/lib/db';
 import { randomUUID } from 'crypto';

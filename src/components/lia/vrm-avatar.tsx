@@ -1,22 +1,48 @@
 'use client';
 
+// ============================================================================
+// VrmAvatar — 3D VRM-аватар с эмоциями, дыханием, морганием, lip-sync.
+// ============================================================================
+//
+// Главный компонент. Содержит:
+//   - VrmAvatar (thin wrapper: Canvas + BackgroundLayer + Scene)
+//   - Scene (lights + VrmModel + Platform + OrbitControls)
+//   - VrmModel (загрузка VRM + useFrame animation loop)
+//
+// Вынесено в подмодули vrm/:
+//   - vrm/constants.ts   — EMOTION_COLORS, ARM_POSE_QUATERNIONS, BoneBases, eulerToQuat
+//   - vrm/background.tsx — BackgroundLayer
+//   - vrm/platform.tsx   — Platform + PlatformGeometry
+//   - vrm/blendshapes.ts — setExpr, emotionToBlendshapes
+//
+// VrmModel остаётся здесь, потому что useFrame animation loop тесно связан
+// с refs (vrmRef, basesRef, animState) и не может быть легко вынесен без
+// проброса всех refs через props.
+
 import { Canvas, useFrame, useThree } from '@react-three/fiber';
 import { OrbitControls } from '@react-three/drei';
 import * as THREE from 'three';
 import { VRMLoaderPlugin, VRMUtils, type VRM, type VRMExpressionPresetName } from '@pixiv/three-vrm';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
-import { useEffect, useMemo, useRef, useState, Suspense } from 'react';
-import type { EmotionVector, EmotionAxis } from '@/lib/personality';
+import { useEffect, useRef, useState, Suspense } from 'react';
+import type { EmotionVector } from '@/lib/personality';
 import { dominantEmotion } from '@/lib/emotion';
 import {
   DEFAULT_AVATAR_CONFIG,
   LIGHTING_PRESETS,
   CAMERA_PRESETS,
   type AvatarConfig,
-  type PlatformShape,
-  type RingAnimation,
-  type ArmPose,
 } from '@/lib/avatar-config';
+import {
+  DEFAULT_VRM_SRC,
+  EMOTION_COLORS,
+  ARM_POSE_QUATERNIONS,
+  createEmptyBases,
+  type BoneBases,
+} from './vrm/constants';
+import { BackgroundLayer } from './vrm/background';
+import { Platform } from './vrm/platform';
+import { setExpr, emotionToBlendshapes } from './vrm/blendshapes';
 
 export type VrmAvatarProps = {
   emotion: EmotionVector;
@@ -27,19 +53,6 @@ export type VrmAvatarProps = {
   /** Вызывается когда VRM не удалось загрузить (файл отсутствует/битый).
    *  Родитель может переключиться на Live2D fallback. */
   onLoadError?: () => void;
-};
-
-const DEFAULT_VRM_SRC = '/models/Lia.vrm';
-
-// ============================================================================
-// Эмоция → цвет платформы
-// ============================================================================
-const EMOTION_COLORS: Record<EmotionAxis, { base: string; glow: string }> = {
-  joy:        { base: '#d4b89a', glow: '#e8c8a0' },
-  curiosity:  { base: '#8b6f9a', glow: '#a58ab8' },
-  calm:       { base: '#7a9a6b', glow: '#9ab88a' },
-  irritation: { base: '#c2664a', glow: '#d97757' },
-  sadness:    { base: '#7a8ba5', glow: '#9aabc0' },
 };
 
 export function VrmAvatar({
@@ -84,29 +97,8 @@ export function VrmAvatar({
 }
 
 // ============================================================================
-// Фон — отдельный CSS-слой под Canvas
+// Scene — lights + VrmModel + Platform + OrbitControls
 // ============================================================================
-function BackgroundLayer({ config }: { config: AvatarConfig }) {
-  const { style, color, edgeColor } = config.background;
-  if (style === 'transparent') return null;
-
-  let bg: React.CSSProperties;
-  if (style === 'solid') {
-    bg = { background: color };
-  } else if (style === 'gradient') {
-    bg = { background: `linear-gradient(135deg, ${color} 0%, ${edgeColor} 100%)` };
-  } else {
-    bg = { background: `radial-gradient(circle at 50% 40%, ${color} 0%, ${edgeColor} 100%)` };
-  }
-
-  return (
-    <div
-      className="absolute inset-0 rounded-lg pointer-events-none"
-      style={bg}
-    />
-  );
-}
-
 function Scene({
   emotion,
   speaking,
@@ -172,313 +164,6 @@ function Scene({
 }
 
 // ============================================================================
-// Arm pose presets → quaternions.
-//
-// Используем THREE.Quaternion.setFromEuler для каждого сустава, чтобы избежать
-// проблем с порядком Euler XYZ (который в VRM normalized bones даёт непредсказуемые
-// результаты при комбинировании X+Y+Z вращений). Quaternion — однозначное
-// представление旋转, порядок не важен.
-//
-// Все углы подобраны визуально на модели Lia.vrm (высота 1.666m).
-// ============================================================================
-export const ARM_POSE_QUATERNIONS: Record<ArmPose, {
-  leftUpperArm: [number, number, number];   // Euler XYZ в радианах
-  rightUpperArm: [number, number, number];
-  leftLowerArm: [number, number, number];
-  rightLowerArm: [number, number, number];
-  leftHand: [number, number, number];
-  rightHand: [number, number, number];
-}> = {
-  // Естественная поза — руки опущены вдоль тела.
-  // X=0.05 — лёгкий наклон вперёд, Z=-1.35 — опустить вдоль тела.
-  natural: {
-    leftUpperArm:  [0.05, 0, -1.35],
-    rightUpperArm: [0.05, 0, 1.35],
-    leftLowerArm:  [-0.25, 0, 0],
-    rightLowerArm: [-0.25, 0, 0],
-    leftHand:  [0, 0, 0.15],
-    rightHand: [0, 0, -0.15],
-  },
-  // Расслабленная — локти согнуты больше, кисти ближе к бёдрам.
-  relaxed: {
-    leftUpperArm:  [0.10, 0, -1.15],
-    rightUpperArm: [0.10, 0, 1.15],
-    leftLowerArm:  [-0.55, 0.05, 0],
-    rightLowerArm: [-0.55, -0.05, 0],
-    leftHand:  [0, 0, 0.20],
-    rightHand: [0, 0, -0.20],
-  },
-  // T-pose — руки строго в стороны.
-  't-pose': {
-    leftUpperArm:  [0, 0, 0],
-    rightUpperArm: [0, 0, 0],
-    leftLowerArm:  [0, 0, 0],
-    rightLowerArm: [0, 0, 0],
-    leftHand:  [0, 0, 0],
-    rightHand: [0, 0, 0],
-  },
-  // Скрещённые на груди.
-  // Анатомия VRM 1.0 (проверено визуально итеративно):
-  //   upperArm.X ≈ +1.3 → поднимает руку вперёд к горизонтали
-  //   upperArm.Z ≈ ∓0.4 → прижимает плечевую кость к корпусу
-  //   lowerArm.X ≈ -1.6 → сгибает локоть (negative = кисть к плечу)
-  //   lowerArm.Z ≈ ±0.6 → отводит кисть внутрь (к противоположному плечу)
-  crossed: {
-    leftUpperArm:  [1.30, 0, -0.40],
-    rightUpperArm: [1.30, 0, 0.40],
-    leftLowerArm:  [-1.60, 0, 0.60],
-    rightLowerArm: [-1.60, 0, -0.60],
-    leftHand:  [0, 0, 0],
-    rightHand: [0, 0, 0],
-  },
-  // Руки в карманах — слегка согнуты, кисти у бёдер.
-  'hands-pockets': {
-    leftUpperArm:  [0.20, 0, -0.95],
-    rightUpperArm: [0.20, 0, 0.95],
-    leftLowerArm:  [-0.85, 0.15, 0],
-    rightLowerArm: [-0.85, -0.15, 0],
-    leftHand:  [0, 0, 0.30],
-    rightHand: [0, 0, -0.30],
-  },
-};
-
-// Helper: Euler XYZ → quaternion array [x, y, z, w]
-function eulerToQuat(x: number, y: number, z: number): [number, number, number, number] {
-  const e = new THREE.Euler(x, y, z, 'XYZ');
-  const q = new THREE.Quaternion().setFromEuler(e);
-  return [q.x, q.y, q.z, q.w];
-}
-
-// ============================================================================
-// Платформа — 4 формы + 4 анимации кольца
-// ============================================================================
-function Platform({
-  colors,
-  intensity,
-  config,
-}: {
-  colors: { base: string; glow: string };
-  intensity: number;
-  config: AvatarConfig['platform'];
-}) {
-  const baseMatRef = useRef<THREE.MeshStandardMaterial>(null);
-  const ringMatRef = useRef<THREE.MeshStandardMaterial>(null);
-  const innerRingMatRef = useRef<THREE.MeshStandardMaterial>(null);
-  const glowMatRef = useRef<THREE.MeshBasicMaterial>(null);
-  const ringGroupRef = useRef<THREE.Group>(null);
-  const shadowMatRef = useRef<THREE.MeshBasicMaterial>(null);
-
-  const targetBase = useMemo(() => new THREE.Color(colors.base), [colors.base]);
-  const targetGlow = useMemo(() => new THREE.Color(colors.glow), [colors.glow]);
-  const radius = config.radius;
-  const height = config.height;
-
-  useFrame(() => {
-    const t = performance.now() / 1000;
-    const pulse = config.ringAnimation === 'pulse'
-      ? 0.5 + Math.sin(t * 1.5) * 0.25
-      : config.ringAnimation === 'breathing'
-        ? 0.6 + Math.sin(t * 0.8) * 0.3
-        : 0.7;
-
-    if (baseMatRef.current) {
-      baseMatRef.current.color.lerp(targetBase, 0.08);
-      baseMatRef.current.opacity = THREE.MathUtils.lerp(baseMatRef.current.opacity, config.opacity, 0.08);
-    }
-    if (ringMatRef.current) {
-      ringMatRef.current.color.lerp(targetGlow, 0.08);
-      const targetOp = config.ringAnimation === 'solid' ? 0.9 : 0.5 + pulse * 0.5;
-      ringMatRef.current.opacity = THREE.MathUtils.lerp(ringMatRef.current.opacity, targetOp, 0.08);
-      ringMatRef.current.emissiveIntensity = THREE.MathUtils.lerp(
-        ringMatRef.current.emissiveIntensity,
-        0.4 + pulse * 0.6,
-        0.08,
-      );
-    }
-    if (innerRingMatRef.current) {
-      innerRingMatRef.current.color.lerp(targetGlow, 0.08);
-      innerRingMatRef.current.opacity = THREE.MathUtils.lerp(innerRingMatRef.current.opacity, 0.4 + pulse * 0.3, 0.08);
-    }
-    if (glowMatRef.current) {
-      glowMatRef.current.color.lerp(targetGlow, 0.08);
-      glowMatRef.current.opacity = THREE.MathUtils.lerp(
-        glowMatRef.current.opacity,
-        0.15 + intensity * 0.35 * pulse,
-        0.08,
-      );
-    }
-    if (ringGroupRef.current && config.ringAnimation === 'rotate') {
-      ringGroupRef.current.rotation.y += 0.01 * config.rotateSpeed;
-    }
-    if (shadowMatRef.current) {
-      const breath = 0.95 + Math.sin(t * 0.8) * 0.05;
-      shadowMatRef.current.opacity = THREE.MathUtils.lerp(shadowMatRef.current.opacity, 0.25 * breath, 0.08);
-    }
-  });
-
-  return (
-    <group>
-      <PlatformGeometry shape={config.shape} radius={radius} height={height}>
-        <meshStandardMaterial
-          ref={baseMatRef}
-          color={colors.base}
-          transparent
-          opacity={config.opacity}
-          roughness={0.55}
-          metalness={0.05}
-        />
-      </PlatformGeometry>
-
-      <group ref={ringGroupRef}>
-        <mesh position={[0, height + 0.005, 0]}>
-          <torusGeometry args={[radius, 0.012, 16, 96]} />
-          <meshStandardMaterial
-            ref={ringMatRef}
-            color={colors.glow}
-            emissive={colors.glow}
-            emissiveIntensity={0.6}
-            transparent
-            opacity={0.9}
-            roughness={0.3}
-          />
-        </mesh>
-
-        {config.showInnerRing && (
-          <mesh position={[0, height + 0.005, 0]}>
-            <torusGeometry args={[radius * 0.76, 0.006, 12, 64]} />
-            <meshStandardMaterial
-              ref={innerRingMatRef}
-              color={colors.glow}
-              emissive={colors.glow}
-              emissiveIntensity={0.4}
-              transparent
-              opacity={0.6}
-              roughness={0.3}
-            />
-          </mesh>
-        )}
-      </group>
-
-      {config.showHalo && (
-        <mesh position={[0, 0.001, 0]} rotation={[-Math.PI / 2, 0, 0]}>
-          <circleGeometry args={[radius * 1.4, 64]} />
-          <meshBasicMaterial
-            ref={glowMatRef}
-            color={colors.glow}
-            transparent
-            opacity={0.2}
-            side={THREE.DoubleSide}
-            depthWrite={false}
-          />
-        </mesh>
-      )}
-
-      {config.showShadow && (
-        <mesh position={[0, 0.012, 0]} rotation={[-Math.PI / 2, 0, 0]}>
-          <circleGeometry args={[radius * 0.55, 32]} />
-          <meshBasicMaterial
-            ref={shadowMatRef}
-            color="#000000"
-            transparent
-            opacity={0.25}
-            side={THREE.DoubleSide}
-            depthWrite={false}
-          />
-        </mesh>
-      )}
-    </group>
-  );
-}
-
-// ============================================================================
-// Геометрия платформы — выбирается по форме
-// ============================================================================
-function PlatformGeometry({
-  shape,
-  radius,
-  height,
-  children,
-}: {
-  shape: PlatformShape;
-  radius: number;
-  height: number;
-  children: React.ReactNode;
-}) {
-  if (shape === 'ring') {
-    return (
-      <mesh position={[0, height / 2, 0]}>
-        <cylinderGeometry args={[radius, radius, height, 64, 1, true]} />
-        {children}
-      </mesh>
-    );
-  }
-  if (shape === 'hexagon') {
-    return (
-      <mesh position={[0, height / 2, 0]} rotation={[0, Math.PI / 6, 0]}>
-        <cylinderGeometry args={[radius, radius * 1.05, height, 6]} />
-        {children}
-      </mesh>
-    );
-  }
-  if (shape === 'pedestal') {
-    return (
-      <group>
-        <mesh position={[0, height, 0]}>
-          <cylinderGeometry args={[radius, radius, 0.03, 64]} />
-          {children}
-        </mesh>
-        <mesh position={[0, height * 0.25, 0]}>
-          <cylinderGeometry args={[radius * 1.15, radius * 1.25, height * 0.5, 64]} />
-          {children}
-        </mesh>
-      </group>
-    );
-  }
-  return (
-    <mesh position={[0, height / 2, 0]}>
-      <cylinderGeometry args={[radius, radius + 0.04, height, 64]} />
-      {children}
-    </mesh>
-  );
-}
-
-// ============================================================================
-// BoneBases — все базовые rotations/positions для костей, которые мы модифицируем.
-// Храним как Euler angles (THREE.Euler), потому что применяем позу через
-// bone.rotation.set() и сбрасываем через rotation.copy(). Это согласованный
-// подход — нет конфликта между quaternion и Euler.
-// ============================================================================
-type BoneBases = {
-  hips: { posX: number; posY: number; rotX: number; rotY: number; rotZ: number };
-  spine: { rotX: number; rotY: number; rotZ: number };
-  head: { rotX: number; rotY: number; rotZ: number };
-  leftShoulder: { rotZ: number };
-  rightShoulder: { rotZ: number };
-  leftUpperArm: { rotX: number; rotY: number; rotZ: number };
-  rightUpperArm: { rotX: number; rotY: number; rotZ: number };
-  leftLowerArm: { rotX: number; rotY: number; rotZ: number };
-  rightLowerArm: { rotX: number; rotY: number; rotZ: number };
-  leftUpperLeg: { rotZ: number };
-  rightUpperLeg: { rotZ: number };
-};
-
-function createEmptyBases(): BoneBases {
-  return {
-    hips: { posX: 0, posY: 0, rotX: 0, rotY: 0, rotZ: 0 },
-    spine: { rotX: 0, rotY: 0, rotZ: 0 },
-    head: { rotX: 0, rotY: 0, rotZ: 0 },
-    leftShoulder: { rotZ: 0 },
-    rightShoulder: { rotZ: 0 },
-    leftUpperArm: { rotX: 0, rotY: 0, rotZ: 0 },
-    rightUpperArm: { rotX: 0, rotY: 0, rotZ: 0 },
-    leftLowerArm: { rotX: 0, rotY: 0, rotZ: 0 },
-    rightLowerArm: { rotX: 0, rotY: 0, rotZ: 0 },
-    leftUpperLeg: { rotZ: 0 },
-    rightUpperLeg: { rotZ: 0 },
-  };
-}
-
-// ============================================================================
 // VrmModel — загрузка VRM + все idle-анимации
 // ============================================================================
 function VrmModel({
@@ -502,8 +187,6 @@ function VrmModel({
   const onLoadErrorCalledRef = useRef(false);
 
   // ── Загрузка VRM + применение позы + сохранение баз ──
-  // ВСЁ в одном useEffect, чтобы гарантировать порядок:
-  //   1. load → 2. resetValues → 3. apply pose → 4. capture bases
   useEffect(() => {
     let cancelled = false;
     setLoaded(false);
@@ -531,15 +214,11 @@ function VrmModel({
         VRMUtils.removeUnnecessaryVertices(gltf.scene);
         vrm.scene.rotation.y = 0;
 
-        // Сброс морфов
         if (vrm.expressionManager) {
           vrm.expressionManager.resetValues();
         }
 
         // ── Применяем позу рук напрямую через bone.rotation (Euler) ──
-        // Используем прямой доступ к bone.rotation вместо setNormalizedPose,
-        // потому что setNormalizedPose устанавливает quaternion, но vrm.update()
-        // в useFrame может его перезаписать. Прямой доступ к rotation надёжнее.
         const poseQuat = ARM_POSE_QUATERNIONS[config.body.armPose];
         if (vrm.humanoid) {
           const setBoneRot = (name: string, euler: [number, number, number]) => {
@@ -568,8 +247,6 @@ function VrmModel({
         vrmRef.current = vrm;
 
         // ── Сохраняем базы ВСЕХ костей как Euler angles ──
-        // Сохраняем ПОСЛЕ применения позы, чтобы базы включали выбранную позу рук.
-        // Сброс в useFrame делаем через rotation.set() — точно восстанавливает позу.
         if (vrm.humanoid) {
           const getBone = (name: string) => vrm.humanoid!.getNormalizedBoneNode(name as never);
           const hips = getBone('hips');
@@ -602,27 +279,15 @@ function VrmModel({
           if (rightLowerArm) { b.rightLowerArm.rotX = rightLowerArm.rotation.x; b.rightLowerArm.rotY = rightLowerArm.rotation.y; b.rightLowerArm.rotZ = rightLowerArm.rotation.z; }
           if (leftUpperLeg) b.leftUpperLeg.rotZ = leftUpperLeg.rotation.z;
           if (rightUpperLeg) b.rightUpperLeg.rotZ = rightUpperLeg.rotation.z;
-
-          console.log('[VRM] pose applied, bases captured:', {
-            armPose: config.body.armPose,
-            leftUpperArmRotX: b.leftUpperArm.rotX.toFixed(3),
-            leftUpperArmRotY: b.leftUpperArm.rotY.toFixed(3),
-            leftUpperArmRotZ: b.leftUpperArm.rotZ.toFixed(3),
-            leftLowerArmRotX: b.leftLowerArm.rotX.toFixed(3),
-            leftLowerArmRotZ: b.leftLowerArm.rotZ.toFixed(3),
-            hipsPosY: b.hips.posY.toFixed(3),
-          });
         }
 
         setLoaded(true);
-        console.log('[VRM] loaded successfully, pose:', config.body.armPose);
       },
       undefined,
       (err) => {
         if (cancelled) return;
         console.error('[VRM] load failed:', err);
         setLoadFailed(true);
-        // Уведомляем родителя один раз — он может переключиться на Live2D fallback.
         if (!onLoadErrorCalledRef.current) {
           onLoadErrorCalledRef.current = true;
           onLoadError?.();
@@ -676,8 +341,6 @@ function VrmModel({
   // ── Главный цикл анимации ──
   // АРХИТЕКТУРА: каждый кадр начинаем с базовых значений, потом накладываем
   // все активные анимации как absolute = base + delta. Никаких += !
-  // Это гарантирует, что поза не «уплывает» со временем и что выключение
-  // любой анимации мгновенно возвращает кость к базе.
   useFrame((_, delta) => {
     const vrm = vrmRef.current;
     if (!vrm || !loaded) return;
@@ -695,7 +358,6 @@ function VrmModel({
     animState.current.weightPhase += delta * 0.18 * freq;
     animState.current.headPhase += delta * 0.28 * freq;
 
-    // Получаем кости один раз
     const hips = humanoid.getNormalizedBoneNode('hips' as never);
     const spine = humanoid.getNormalizedBoneNode('spine' as never);
     const head = humanoid.getNormalizedBoneNode('head' as never);
@@ -709,7 +371,6 @@ function VrmModel({
     const rightUpperLeg = humanoid.getNormalizedBoneNode('rightUpperLeg' as never);
 
     // ── Шаг 1: сброс ВСЕХ модифицируемых костей к базе (Euler) ──
-    // Используем rotation.set() / прямое присвоение — точно восстанавливает позу.
     if (hips) {
       hips.position.x = b.hips.posX;
       hips.position.y = b.hips.posY;
@@ -728,7 +389,7 @@ function VrmModel({
     if (leftUpperLeg) leftUpperLeg.rotation.z = b.leftUpperLeg.rotZ;
     if (rightUpperLeg) rightUpperLeg.rotation.z = b.rightUpperLeg.rotZ;
 
-    // ── Шаг 2: дыхание (absolute = base + delta) ──
+    // ── Шаг 2: дыхание ──
     if (cfg.breathing) {
       const breath = Math.sin(animState.current.breathPhase);
       if (spine) {
@@ -739,7 +400,7 @@ function VrmModel({
       if (rightShoulder) rightShoulder.rotation.z = b.rightShoulder.rotZ - breath * 0.015;
     }
 
-    // ── Шаг 3: покачивание телом (absolute) ──
+    // ── Шаг 3: покачивание телом ──
     if (cfg.bodySway) {
       const sway = Math.sin(animState.current.swayPhase);
       if (hips) {
@@ -749,7 +410,7 @@ function VrmModel({
       if (spine) spine.rotation.y = b.spine.rotY + Math.sin(animState.current.swayPhase + Math.PI) * 0.02;
     }
 
-    // ── Шаг 4: перенос веса (absolute) ──
+    // ── Шаг 4: перенос веса ──
     if (cfg.weightShift) {
       const shift = Math.sin(animState.current.weightPhase);
       if (hips) hips.position.x = b.hips.posX + shift * 0.025;
@@ -757,7 +418,7 @@ function VrmModel({
       if (rightUpperLeg) rightUpperLeg.rotation.z = b.rightUpperLeg.rotZ + shift * 0.02;
     }
 
-    // ── Шаг 5: микро-движения рук (absolute = base + delta) ──
+    // ── Шаг 5: микро-движения рук ──
     if (cfg.armSway) {
       const armSway1 = Math.sin(animState.current.armPhase) * 0.04;
       const armSway2 = Math.sin(animState.current.armPhase + Math.PI) * 0.04;
@@ -773,14 +434,12 @@ function VrmModel({
       if (rightLowerArm) rightLowerArm.rotation.x = b.rightLowerArm.rotX + Math.sin(animState.current.armPhase * 0.5 + Math.PI) * 0.015;
     }
 
-    // ── Шаг 6: эмоциональная поза (absolute = base + delta) ──
+    // ── Шаг 6: эмоциональная поза ──
     if (cfg.emotionPose) {
-      // Joy — лёгкое подпрыгивание
       if (emotion.joy > 0.6 && hips) {
         const bounce = Math.sin(t * 2.5) * 0.015 * (emotion.joy - 0.5);
         hips.position.y = b.hips.posY + bounce;
       }
-      // Sadness — плечи вперёд, голова вниз
       if (emotion.sadness > 0.4) {
         const intensity = (emotion.sadness - 0.3) * 0.5;
         if (spine) spine.rotation.x = b.spine.rotX + intensity * 0.08;
@@ -788,19 +447,16 @@ function VrmModel({
         if (leftShoulder) leftShoulder.rotation.z = b.leftShoulder.rotZ + intensity * 0.05;
         if (rightShoulder) rightShoulder.rotation.z = b.rightShoulder.rotZ - intensity * 0.05;
       }
-      // Irritation — подбородок вверх, руки ближе к корпусу
       if (emotion.irritation > 0.4) {
         const intensity = (emotion.irritation - 0.3) * 0.5;
         if (head) head.rotation.x = b.head.rotX - intensity * 0.06;
         if (leftUpperArm) leftUpperArm.rotation.z = b.leftUpperArm.rotZ + intensity * 0.04;
         if (rightUpperArm) rightUpperArm.rotation.z = b.rightUpperArm.rotZ - intensity * 0.04;
       }
-      // Curiosity — наклон головы вбок
       if (emotion.curiosity > 0.6 && head) {
         const intensity = (emotion.curiosity - 0.5) * 0.3;
         head.rotation.z = b.head.rotZ + Math.sin(t * 0.4) * intensity * 0.08;
       }
-      // Calm — расслабленные плечи
       if (emotion.calm > 0.6) {
         const intensity = (emotion.calm - 0.5) * 0.2;
         if (leftShoulder) leftShoulder.rotation.z = b.leftShoulder.rotZ - intensity * 0.03;
@@ -808,7 +464,7 @@ function VrmModel({
       }
     }
 
-    // ── Шаг 7: покачивание головой + gaze follow (absolute) ──
+    // ── Шаг 7: покачивание головой + gaze follow ──
     if (cfg.headSway && head) {
       head.rotation.y = b.head.rotY + Math.sin(animState.current.headPhase) * 0.08;
       head.rotation.x = b.head.rotX + Math.sin(animState.current.headPhase * 0.6) * 0.03;
@@ -881,14 +537,10 @@ function VrmModel({
     }
     setExpr(vrm, 'aa', animState.current.mouthValue);
 
-    // vrm.update() может выбросить если модель повреждена или в невалидном
-    // состоянии. try/catch предотвращает краш всего React tree.
     try {
       vrm.update(delta);
     } catch (e) {
       console.error('[VRM] vrm.update() failed:', e);
-      // Не отключаем анимации полностью — в следующем кадре может стать лучше.
-      // Если ошибка повторяется, VrmErrorBoundary перехватит.
     }
   });
 
@@ -904,26 +556,4 @@ function VrmModel({
   }
 
   return <group ref={groupRef} />;
-}
-
-function setExpr(vrm: VRM, name: VRMExpressionPresetName | string, value: number) {
-  if (!vrm.expressionManager) return;
-  try {
-    const clamped = Math.max(0, Math.min(1, value));
-    vrm.expressionManager.setValue(name as VRMExpressionPresetName, clamped);
-  } catch (e) {
-    // Некоторые VRM-модели могут не иметь определённых blendshapes.
-    // Молча игнорируем — это не критично.
-  }
-}
-
-function emotionToBlendshapes(e: EmotionVector): Record<string, number> {
-  return {
-    happy:     Math.max(0, e.joy - 0.4) * 1.0,
-    angry:     Math.max(0, e.irritation - 0.35) * 1.2,
-    sad:       Math.max(0, e.sadness - 0.3) * 1.1,
-    relaxed:   Math.max(0, e.calm - 0.5) * 0.7,
-    surprised: 0,
-    aa: 0,
-  };
 }

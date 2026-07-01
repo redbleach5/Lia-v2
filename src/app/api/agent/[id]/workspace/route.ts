@@ -10,6 +10,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { readFile, readdir, stat } from 'fs/promises';
 import { join } from 'path';
 import { getAgentTask } from '@/lib/agent/task';
+import { safePathWithinScope } from '@/lib/agent/fs-scope';
 import { logger } from '@/lib/logger';
 
 export const runtime = 'nodejs';
@@ -74,18 +75,19 @@ export async function GET(
     let fileError: string | null = null;
 
     if (filePath) {
-      // Security: prevent path traversal
-      const fullPath = join(task.fsScope, filePath);
-      const rel = fullPath.slice(task.fsScope.length);
-      if (rel.startsWith('..')) {
-        fileError = 'path traversal detected';
+      // Security: path traversal protection via safePathWithinScope.
+      // Решает symlink-атаки и Windows-сепараторы (`..\etc\passwd` обходил
+      // старую проверку `slice + startsWith('..')`).
+      const safePath = await safePathWithinScope(filePath, task.fsScope);
+      if (!safePath) {
+        fileError = 'path traversal detected or file outside workspace';
       } else {
         try {
-          const s = await stat(fullPath);
+          const s = await stat(safePath);
           if (s.size > 100_000) {
             fileError = 'file too large (max 100KB)';
           } else {
-            fileContent = await readFile(fullPath, 'utf8');
+            fileContent = await readFile(safePath, 'utf8');
           }
         } catch {
           fileError = 'file not found';

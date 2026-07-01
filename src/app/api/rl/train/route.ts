@@ -4,6 +4,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { trainSidecar } from '@/lib/rl/inference';
 import { db } from '@/lib/db';
 import { logger } from '@/lib/logger';
+import { parseBody, rlTrainSchema } from '@/lib/infra/api-validation';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -11,15 +12,11 @@ export const maxDuration = 300; // 5 min for training
 
 export async function POST(req: NextRequest) {
   try {
-    const body = await req.json().catch(() => ({}));
-    const nEpochs: number | undefined = typeof body?.nEpochs === 'number'
-      ? Math.min(100, Math.max(1, body.nEpochs))
-      : undefined;
-    const parentVersion: number | undefined = typeof body?.parentVersion === 'number'
-      ? Math.max(0, body.parentVersion)
-      : undefined;
+    const parsed = await parseBody(req, rlTrainSchema);
+    if (!parsed.success) return parsed.response;
+    const { nEpochs } = parsed.data;
 
-    const result = await trainSidecar({ nEpochs, parentVersion });
+    const result = await trainSidecar({ nEpochs });
 
     if (!result.ok) {
       return NextResponse.json(
@@ -29,7 +26,6 @@ export async function POST(req: NextRequest) {
     }
 
     // Записываем версию в RlModelVersion — для истории и UI.
-    // Раньше версия хранилась только в Setting (rl_active_version), без метрик.
     if (result.result) {
       try {
         await db.rlModelVersion.create({
@@ -44,10 +40,8 @@ export async function POST(req: NextRequest) {
               avgEntropy: result.result.avg_entropy,
               samplesCount: result.result.samples_count,
               durationSec: result.result.duration_sec,
-              nEpochs: nEpochs ?? 10,
-              parentVersion: parentVersion ?? null,
+              nEpochs,
             }),
-            parentVersion: parentVersion ?? null,
           },
         });
         logger.info('rl', `Recorded model version ${result.result.version} in RlModelVersion`);

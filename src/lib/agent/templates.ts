@@ -1,3 +1,5 @@
+import 'server-only';
+
 // Agent templates — специализированные роли для multi-agent системы.
 //
 // Каждый шаблон определяет:
@@ -36,7 +38,9 @@ export type AgentTemplate = {
   toolWhitelist: string[] | null;  // null = все инструменты
   maxSteps: number;
   maxDurationSec: number;
-  canSpawnSubagents: boolean;      // может ли этот шаблон порождать под-агентов
+  // NOTE: canSpawnSubagents удалён в Phase 4.3 — был мёртвым флагом.
+  // Логика spawn проверяет parentTaskId !== null (глубина < 2),
+  // а не этот флаг. См. spawn_subagent в lib/agent/tools.ts.
 };
 
 // ============================================================================
@@ -51,7 +55,6 @@ export const AGENT_TEMPLATES: Record<AgentTemplateName, AgentTemplate> = {
     toolWhitelist: null,  // все инструменты
     maxSteps: 15,
     maxDurationSec: 600,
-    canSpawnSubagents: true,
   },
 
   // ── planner — архитектор задачи, делегирует специалистам ──
@@ -84,7 +87,6 @@ export const AGENT_TEMPLATES: Record<AgentTemplateName, AgentTemplate> = {
     toolWhitelist: ['spawn_subagent', 'spawn_subagents', 'ask_user', 'save_artifact'],
     maxSteps: 20,
     maxDurationSec: 1800,  // 30 min — planner ждёт специалистов
-    canSpawnSubagents: true,
   },
 
   // ── researcher — ищет информацию ──
@@ -109,7 +111,6 @@ export const AGENT_TEMPLATES: Record<AgentTemplateName, AgentTemplate> = {
     toolWhitelist: ['web_search', 'fetch_page', 'http_request', 'save_artifact', 'read_file', 'list_tree'],
     maxSteps: 10,
     maxDurationSec: 300,  // 5 min
-    canSpawnSubagents: false,  // researcher не делегирует
   },
 
   // ── coder — пишет код ──
@@ -137,7 +138,6 @@ export const AGENT_TEMPLATES: Record<AgentTemplateName, AgentTemplate> = {
     toolWhitelist: ['write_file', 'edit_file', 'read_file', 'list_dir', 'list_tree', 'file_search', 'code_run', 'save_artifact'],
     maxSteps: 15,
     maxDurationSec: 600,  // 10 min
-    canSpawnSubagents: true,  // coder может делегировать tester'у
   },
 
   // ── reviewer — проверяет код ──
@@ -163,7 +163,6 @@ export const AGENT_TEMPLATES: Record<AgentTemplateName, AgentTemplate> = {
     toolWhitelist: ['read_file', 'list_dir', 'list_tree', 'file_search', 'code_run'],
     maxSteps: 8,
     maxDurationSec: 300,
-    canSpawnSubagents: false,
   },
 
   // ── tester — запускает и тестирует код ──
@@ -188,7 +187,6 @@ export const AGENT_TEMPLATES: Record<AgentTemplateName, AgentTemplate> = {
     toolWhitelist: ['read_file', 'list_dir', 'list_tree', 'write_file', 'code_run'],
     maxSteps: 10,
     maxDurationSec: 300,
-    canSpawnSubagents: false,
   },
 
   // ── writer — технический писатель ──
@@ -212,7 +210,6 @@ export const AGENT_TEMPLATES: Record<AgentTemplateName, AgentTemplate> = {
     toolWhitelist: ['read_file', 'list_dir', 'list_tree', 'write_file', 'save_artifact'],
     maxSteps: 8,
     maxDurationSec: 300,
-    canSpawnSubagents: false,
   },
 };
 
@@ -222,17 +219,4 @@ export const AGENT_TEMPLATES: Record<AgentTemplateName, AgentTemplate> = {
 export function getTemplate(name: string | undefined | null): AgentTemplate {
   if (!name) return AGENT_TEMPLATES.general;
   return AGENT_TEMPLATES[name as AgentTemplateName] ?? AGENT_TEMPLATES.general;
-}
-
-// ============================================================================
-// Список доступных шаблонов (для UI / промпта planner'а)
-// ============================================================================
-export function listTemplates(): Array<{ name: string; label: string; description: string }> {
-  return Object.values(AGENT_TEMPLATES)
-    .filter(t => t.name !== 'general')  // не показываем general
-    .map(t => ({
-      name: t.name,
-      label: t.label,
-      description: t.systemPrompt.split('\n')[0].replace('Ты — ', ''),
-    }));
 }

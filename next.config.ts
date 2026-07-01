@@ -7,6 +7,8 @@ const nextConfig: NextConfig = {
     'better-sqlite3',
     'onnxruntime-node',
     'sqlite-vec',
+    'pino',
+    'pino-pretty',
   ],
 };
 

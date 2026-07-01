@@ -1,3 +1,5 @@
+import 'server-only';
+
 // RL action instructions — маппинг action id → текстовая инструкция для промпта.
 //
 // Используется в chat route: predictAction(state) → action id → инструкция

@@ -3,9 +3,9 @@
 // DELETE /api/episodes/[id] — delete
 
 import { NextRequest, NextResponse } from 'next/server';
-import { db } from '@/lib/db';
 import { getEpisode, renameEpisode, deleteEpisode, getMessages } from '@/lib/memory/episodes';
 import { logger } from '@/lib/logger';
+import { parseBody, updateEpisodeSchema } from '@/lib/infra/api-validation';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -34,10 +34,11 @@ export async function PATCH(
 ) {
   const { id } = await params;
   try {
-    const body = await req.json().catch(() => ({}));
-    const title: string | undefined = body?.title;
+    const parsed = await parseBody(req, updateEpisodeSchema);
+    if (!parsed.success) return parsed.response;
+    const { title } = parsed.data;
 
-    if (typeof title !== 'string' || title.trim().length === 0) {
+    if (!title || title.trim().length === 0) {
       return NextResponse.json({ error: 'title required' }, { status: 400 });
     }
 

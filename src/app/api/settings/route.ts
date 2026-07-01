@@ -6,9 +6,9 @@ import { getOllamaSettings, setOllamaSettings, checkOllamaHealth, reloadSettings
 import { db } from '@/lib/db';
 import { PATHS } from '@/lib/paths';
 import { existsSync, readdirSync } from 'fs';
-import path from 'path';
 import { DEFAULT_AVATAR_CONFIG, parseAvatarConfig, type AvatarConfig } from '@/lib/avatar-config';
 import { logger } from '@/lib/logger';
+import { parseBody, updateSettingsSchema } from '@/lib/infra/api-validation';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -72,33 +72,34 @@ export async function GET() {
 
 export async function POST(req: NextRequest) {
   try {
-    const body = await req.json().catch(() => ({}));
+    const parsed = await parseBody(req, updateSettingsSchema);
+    if (!parsed.success) return parsed.response;
+    const body = parsed.data;
 
-    const ollamaChanged =
-      typeof body.baseUrl === 'string' ||
-      typeof body.model === 'string' ||
-      typeof body.embedModel === 'string';
+    const ollamaChanged = body.baseUrl !== undefined || body.model !== undefined || body.embedModel !== undefined;
 
     // Ollama settings
-    if (typeof body.baseUrl === 'string') {
+    if (body.baseUrl !== undefined) {
       await setOllamaSettings({ baseUrl: body.baseUrl });
     }
-    if (typeof body.model === 'string') {
+    if (body.model !== undefined) {
       await setOllamaSettings({ model: body.model });
     }
-    if (typeof body.embedModel === 'string') {
+    if (body.embedModel !== undefined) {
       await setOllamaSettings({ embedModel: body.embedModel });
     }
 
-    // Avatar settings
-    if (typeof body.avatarMode === 'string' && ['live2d', '3d'].includes(body.avatarMode)) {
+    // Avatar mode
+    if (body.avatarMode !== undefined) {
       await db.setting.upsert({
         where: { key: 'avatar_mode' },
         create: { key: 'avatar_mode', value: body.avatarMode },
         update: { value: body.avatarMode },
       });
     }
-    if (typeof body.activeVrm === 'string') {
+
+    // Active VRM
+    if (body.activeVrm !== undefined && body.activeVrm !== null) {
       await db.setting.upsert({
         where: { key: 'avatar_vrm_path' },
         create: { key: 'avatar_vrm_path', value: body.activeVrm },
@@ -107,7 +108,7 @@ export async function POST(req: NextRequest) {
     }
 
     // Avatar customization config — full JSON blob
-    if (body.avatarConfig && typeof body.avatarConfig === 'object') {
+    if (body.avatarConfig) {
       const merged = parseAvatarConfig(JSON.stringify({
         ...DEFAULT_AVATAR_CONFIG,
         ...body.avatarConfig,
@@ -126,7 +127,6 @@ export async function POST(req: NextRequest) {
     }
 
     // Возвращаем обновлённые настройки + свежий health.
-    // reloadSettings() уже сбросил healthCache, так что checkOllamaHealth даст актуальный статус.
     const settings = await getOllamaSettings();
     const health = await checkOllamaHealth();
     return NextResponse.json({

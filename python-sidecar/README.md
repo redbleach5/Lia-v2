@@ -131,8 +131,9 @@ python-sidecar/
 
 ## Что добавить в будущем
 
-- TensorBoard logging для метрик обучения
-- Stable Baselines3 для серьёзных экспериментов (если захочется сложнее PPO)
 - Real sentiment model (rubert-tiny) вместо rule-based
-- Curriculum learning — обучать на свежих transitions больше, чем на старых
+- Off-policy correction через importance sampling (сейчас PPO approx)
+
+NOTE (Phase 4.3): TensorBoard, Stable Baselines3, Curriculum learning удалены из roadmap —
+не нужны для personal companion. PPO + rule-based reward достаточно.
 

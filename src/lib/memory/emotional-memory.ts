@@ -1,3 +1,5 @@
+import 'server-only';
+
 // Emotional Memory — эмоциональные якоря Лии.
 //
 // Лия помнит не только ЧТО было, но и КАК пользователь себя чувствовал.
@@ -15,7 +17,10 @@
 
 import { db } from '@/lib/db';
 import { embed } from '@/lib/ollama';
-import { vecDb } from '@/lib/db-vec';
+import {
+  insertEmotionalVectorIndex,
+  searchEmotionalVectorsInEpisode,
+} from '@/lib/db-vec';
 import type { EmotionVector } from '@/lib/personality';
 import { logger } from '@/lib/logger';
 
@@ -149,21 +154,17 @@ export async function recordEmotionalAnchor(params: {
       },
     });
 
-    // Also add to vec_virtual index for semantic search
-    // We use a separate "namespace" by prefixing the id with "emo:"
+    // Also add to vec_virtual index for semantic search.
+    // Использует обёртку insertEmotionalVectorIndex из db-vec.ts —
+    // инкапсулирует vec0 virtual table (раньше был прямой vecDb доступ).
     if (embedding) {
       try {
         const vecId = `emo:${record.id}`;
-        const embeddingStr = `[${Array.from(embedding).join(',')}]`;
-        const rowid = hashToRowid(vecId);
-
-        vecDb.prepare(`
-          INSERT OR REPLACE INTO vec_virtual (rowid, embedding, episode_id, source_type)
-          VALUES (?, vec_f32(?), ?, 'emotional')
-        `).run(rowid, embeddingStr, episodeId);
-
-        vecDb.prepare(`INSERT OR REPLACE INTO vec_rowid_map (rowid, vector_id, episode_id) VALUES (?, ?, ?)`)
-          .run(rowid, vecId, episodeId);
+        insertEmotionalVectorIndex({
+          vectorId: vecId,
+          episodeId,
+          embedding,
+        });
       } catch (e) {
         // Non-fatal — emotional anchor is stored in Prisma, just not searchable via vec
         logger.warn('memory', 'vec index insert failed (non-fatal)', {}, e);
@@ -206,33 +207,20 @@ export async function recallEmotionalAnchors(params: {
     // Get query embedding
     const queryEmbedding = await embed(queryText.slice(0, 500));
 
-    // Search vec_virtual for 'emotional' source_type in this episode
-    const embeddingStr = `[${Array.from(queryEmbedding).join(',')}]`;
-
-    // Get top-N emotional anchors by semantic similarity
-    // vec0 requires k = ? constraint alongside MATCH
-    const rows = vecDb.prepare(`
-      SELECT v.rowid, v.distance, m.vector_id as id
-      FROM vec_virtual v
-      JOIN vec_rowid_map m ON v.rowid = m.rowid
-      WHERE m.episode_id = ?
-        AND v.source_type = 'emotional'
-        AND v.embedding MATCH vec_f32(?)
-        AND v.k = ?
-        AND v.distance <= 0.9
-      ORDER BY v.distance
-    `).all(episodeId, embeddingStr, limit * 2) as Array<{
-      rowid: number;
-      distance: number;
-      id: string; // "emo:<cuid>"
-    }>;
+    // Search vec_virtual through wrapper (инкапсуляция vec0 virtual table).
+    const rows = searchEmotionalVectorsInEpisode({
+      episodeId,
+      queryEmbedding,
+      limit: limit * 2,
+      maxDistance: 0.9,
+    });
 
     if (rows.length === 0) {
       return { anchors: [], warning: null };
     }
 
     // Strip "emo:" prefix
-    const anchorIds = rows.map(r => r.id.replace(/^emo:/, ''));
+    const anchorIds = rows.map(r => r.vectorId.replace(/^emo:/, ''));
 
     // Fetch from Prisma.
     // Defence-in-depth: also filter by episodeId — even though vec_rowid_map
@@ -344,12 +332,4 @@ function safeParseEmotion(json: string): EmotionVector | undefined {
   } catch {
     return undefined;
   }
-}
-
-function hashToRowid(s: string): number {
-  let h = 0;
-  for (let i = 0; i < s.length; i++) {
-    h = (h * 31 + s.charCodeAt(i)) | 0;
-  }
-  return Math.abs(h);
 }

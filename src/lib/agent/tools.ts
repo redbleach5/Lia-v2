@@ -1,3 +1,5 @@
+import 'server-only';
+
 // Agent-specific tools — используются только в agent mode.
 //
 // Это расширяет базовый tools registry (web_search, save_artifact) инструментами
@@ -8,11 +10,12 @@
 
 import { tool, type ToolSet } from 'ai';
 import { z } from 'zod';
-import { readFile, writeFile, readdir, stat, mkdir, realpath } from 'fs/promises';
-import { join, resolve, relative, isAbsolute } from 'path';
+import { readFile, writeFile, readdir, stat, mkdir } from 'fs/promises';
+import { join } from 'path';
 import { saveArtifact } from '../tools/save-artifact';
 import { webSearch, fetchPage } from '../tools/web-search';
 import { runCode } from '../tools/code-run';
+import { safePathWithinScope } from './fs-scope';
 import type { AgentTask } from './task';
 import { getTemplate, type AgentTemplateName } from './templates';
 import {
@@ -21,37 +24,6 @@ import {
   isCancelled,
   signalCancellation,
 } from './events';
-
-// ============================================================================
-// Helpers — безопасная работа с путями внутри fsScope
-// ============================================================================
-async function safePathWithinScope(path: string, scope: string | null): Promise<string | null> {
-  if (!scope) return null;
-  const base = resolve(scope);
-  const target = isAbsolute(path) ? resolve(path) : resolve(base, path);
-
-  // Use realpath to resolve symlinks — prevents path traversal via symlink attacks.
-  // If target doesn't exist yet (write_file creating new), check parent exists.
-  try {
-    const realBase = await realpath(base);
-    const realTarget = await realpath(target);
-    const rel = relative(realBase, realTarget);
-    if (rel.startsWith('..') || isAbsolute(rel)) return null; // escape attempt
-    return realTarget;
-  } catch {
-    // File doesn't exist yet — check the parent directory
-    try {
-      const realBase = await realpath(base);
-      const parentDir = resolve(target, '..');
-      const realParent = await realpath(parentDir);
-      const rel = relative(realBase, realParent);
-      if (rel.startsWith('..') || isAbsolute(rel)) return null;
-      return target; // Return non-realpath'd target for writing
-    } catch {
-      return null;
-    }
-  }
-}
 
 // ============================================================================
 // read_file — чтение файла внутри fsScope
@@ -361,69 +333,7 @@ function makeEditFileTool(task: AgentTask) {
 //
 // Also follows redirects MANUALLY — checks each redirect target.
 
-import { lookup } from 'dns/promises';
-import { isIP } from 'net';
-
-const BLOCKED_IP_PATTERNS = [
-  /^127\./,                           // loopback
-  /^10\./,                            // private class A
-  /^192\.168\./,                      // private class C
-  /^172\.(1[6-9]|2[0-9]|3[0-1])\./,  // private class B
-  /^169\.254\./,                      // link-local
-  /^0\./,                             // 0.0.0.0/8
-  /^100\.(6[4-9]|[7-9]\d|1[0-1]\d|12[0-7])\./, // CGNAT 100.64.0.0/10
-  /^::1$/,                            // IPv6 loopback
-  /^fc00::/,                          // IPv6 ULA
-  /^fe80::/,                          // IPv6 link-local
-  /^::ffff:/,                         // IPv4-mapped IPv6 (check inner)
-];
-
-function isPrivateIp(ip: string): boolean {
-  // Handle IPv4-mapped IPv6 (::ffff:1.2.3.4)
-  const mappedMatch = ip.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/i);
-  if (mappedMatch) {
-    return isPrivateIp(mappedMatch[1]);
-  }
-  return BLOCKED_IP_PATTERNS.some(re => re.test(ip));
-}
-
-/**
- * Resolve hostname and check ALL resolved IPs against blocklist.
- * Throws if any IP is private/blocked.
- */
-async function assertSafeHost(hostname: string): Promise<void> {
-  // If hostname is already an IP, check directly
-  if (isIP(hostname)) {
-    if (isPrivateIp(hostname)) {
-      throw new Error(`blocked IP: ${hostname}`);
-    }
-    return;
-  }
-
-  // localhost check
-  if (hostname.toLowerCase() === 'localhost') {
-    throw new Error('blocked: localhost');
-  }
-
-  // DNS resolve
-  let addresses: Array<{ address: string }>;
-  try {
-    addresses = await lookup(hostname, { all: true });
-  } catch {
-    throw new Error(`DNS resolution failed for ${hostname}`);
-  }
-
-  if (addresses.length === 0) {
-    throw new Error(`no DNS records for ${hostname}`);
-  }
-
-  // Check ALL resolved IPs
-  for (const { address } of addresses) {
-    if (isPrivateIp(address)) {
-      throw new Error(`blocked IP ${address} for ${hostname}`);
-    }
-  }
-}
+import { assertSafeHost } from '@/lib/infra/ssrf';
 
 function makeHttpRequestTool() {
   return tool({
@@ -498,21 +408,28 @@ function makeAskUserTool(task: AgentTask) {
       // Pause the task and wait for user input via /api/agent/[id]/input
       emitAgentEvent({ type: 'task_waiting_input', taskId: task.id, question, ts: Date.now() });
 
-      const answer = await new Promise<string>((resolve, reject) => {
-        setWaiting(task.id, { question, resolve, reject });
+      // Pattern: setInterval опрашивает isCancelled, но очищается в finally —
+      // это гарантирует cleanup при resolve (ответ получен), reject (cancel) и throw.
+      let interval: ReturnType<typeof setInterval> | undefined;
+      try {
+        const answer = await new Promise<string>((resolve, reject) => {
+          setWaiting(task.id, { question, resolve, reject });
 
-        // Also poll for cancellation
-        const interval = setInterval(() => {
-          if (isCancelled(task.id)) {
-            clearInterval(interval);
-            reject(new Error('cancelled'));
-          }
-        }, 500);
-      }).catch((e) => {
+          // Poll for cancellation (resolveWaiting в input/route.ts вызовет resolve).
+          interval = setInterval(() => {
+            if (isCancelled(task.id)) {
+              reject(new Error('cancelled'));
+            }
+          }, 500);
+        });
+        return { question, answer };
+      } catch (e) {
         throw e instanceof Error ? e : new Error(String(e));
-      });
-
-      return { question, answer };
+      } finally {
+        // Гарантированная очистка интервала — независимо от того,
+        // завершился Promise через resolve, reject или throw.
+        if (interval) clearInterval(interval);
+      }
     },
   });
 }
@@ -628,8 +545,8 @@ function makeFileSearchTool(task: AgentTask) {
 //
 // Глубина рекурсии:
 //   Level 0 (root) → может spawn
-//   Level 1 (specialist) → может spawn если template.canSpawnSubagents
-//   Level 2 (sub-specialist) → НЕ может spawn
+//   Level 1 (specialist) → НЕ может spawn (ограничение рекурсии)
+//   Phase 4.3: canSpawnSubagents флаг удалён — проверка через parentTaskId !== null.
 // ============================================================================
 function makeSpawnSubagentTool(task: AgentTask) {
   return tool({

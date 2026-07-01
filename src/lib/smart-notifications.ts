@@ -1,3 +1,5 @@
+import 'server-only';
+
 // Smart Notifications — non-intrusive hints when hardware limits quality.
 //
 // Scenario: user asks "prove Gödel's incompleteness theorem" on a 4B model.

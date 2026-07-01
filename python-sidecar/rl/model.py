@@ -128,8 +128,13 @@ def save_model(model: LiaPolicyNetwork, path: str) -> None:
 
 
 def load_model(path: str) -> LiaPolicyNetwork:
-    """Load a model from a .pt file."""
-    checkpoint = torch.load(path, map_location="cpu", weights_only=False)
+    """Load a model from a .pt file.
+
+    weights_only=True — защищает от pickle-десериализации произвольных объектов.
+    В .pt файле хранится только dict примитивов (state_dim, num_actions,
+    hidden_dim, state_dict), поэтому weights_only=True работает.
+    """
+    checkpoint = torch.load(path, map_location="cpu", weights_only=True)
     model = LiaPolicyNetwork(
         state_dim=checkpoint["state_dim"],
         num_actions=checkpoint["num_actions"],

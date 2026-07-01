@@ -249,8 +249,17 @@ export async function runChatPipeline(input: ChatPipelineInput): Promise<ChatPip
     system: systemPrompt + (deliberateContext ? `\n\nВНУТРЕННИЙ АНАЛИЗ:\n${deliberateContext}` : ''),
     messages: coreMessages,
     tools: plan.toolsEnabled && toolsSupported ? tools : undefined,
+    // ── stopWhen: количество шагов в multi-turn tool loop ──
+    // Каждый step = один раунд LLM. Если модель вызывает tool — это step 1.
+    // Чтобы модель увидела результат tool и сгенерировала текстовый ответ,
+    // нужен step 2. С isStepCount(1) стрим завершался СРАЗУ после tool call
+    // → пользователь получал пустой ответ (responseLength: 0).
+    //
+    // Chat mode: 2 шага (1 tool call + 1 ответ). Этого достаточно для
+    // простых запросов с одним инструментом.
+    // Agent mode: 5 шагов (множественные tool calls в одной задаче).
     stopWhen: (plan.toolsEnabled && toolsSupported)
-      ? (userMode === 'agent' ? isStepCount(5) : isStepCount(1))
+      ? (userMode === 'agent' ? isStepCount(5) : isStepCount(2))
       : isStepCount(1),
     temperature: 0.7,
     maxOutputTokens: plan.maxTokens,

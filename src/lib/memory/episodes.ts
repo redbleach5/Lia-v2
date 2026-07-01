@@ -161,9 +161,29 @@ export async function saveMessage(episodeId: string, params: {
   };
 }
 
-export async function getMessages(episodeId: string, limit = 50): Promise<ChatMessage[]> {
+/**
+ * Get messages for an episode — cursor-based pagination.
+ *
+ * Phase 7.1: добавлена поддержка cursor для загрузки истории по частям.
+ * При вызове без cursor — возвращает последние `limit` сообщений (как раньше).
+ * При вызове с cursor (createdAtolder) — возвращает `limit` сообщений
+ * старше cursor, для подгрузки истории при скролле вверх.
+ *
+ * Возвращает сообщения в хронологическом порядке (старые → новые).
+ */
+export async function getMessages(
+  episodeId: string,
+  limit = 50,
+  cursor?: { createdAt: Date; id: string },
+): Promise<ChatMessage[]> {
   const rows = await db.message.findMany({
-    where: { episodeId },
+    where: {
+      episodeId,
+      ...(cursor ? {
+        // Сообщения старше cursor — для подгрузки истории
+        createdAt: { lt: cursor.createdAt },
+      } : {}),
+    },
     orderBy: { createdAt: 'desc' },
     take: limit,
   });

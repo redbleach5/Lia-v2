@@ -21,8 +21,10 @@
 
 import { db } from '@/lib/db';
 import { checkOllamaHealth } from '@/lib/ollama';
-import { execSync } from 'child_process';
-import { existsSync } from 'fs';
+import { execFile } from 'child_process';
+import { promisify } from 'util';
+
+const execFileAsync = promisify(execFile);
 import { logger } from '@/lib/logger';
 
 // ============================================================================
@@ -101,36 +103,41 @@ async function setCachedProfile(profile: CapabilityProfile): Promise<void> {
  * Detect GPU info via nvidia-smi (Linux/Windows) or system_profiler (macOS).
  * Returns null if no GPU detected (true CPU-only).
  *
+ * Phase 7.2: конвертирован из execSync (блокировал event loop до 15s) в async execFile.
+ * GPU не меняется во время работы — кэшируем результат навсегда.
+ *
  * macOS: Apple Silicon (M1/M2/M3) uses Metal via unified memory.
  * We detect this via `system_profiler SPDisplaysDataType` and report
  * VRAM as half of total system RAM (conservative estimate for ML workload).
  */
-function detectGpu(): { count: number; vramGb: number; name: string | null } | null {
+// Вечный кэш — GPU не меняется между запросами
+let gpuCache: { count: number; vramGb: number; name: string | null } | null | undefined;
+
+async function detectGpu(): Promise<{ count: number; vramGb: number; name: string | null } | null> {
+  if (gpuCache !== undefined) return gpuCache;
+  gpuCache = await detectGpuUncached();
+  return gpuCache;
+}
+
+async function detectGpuUncached(): Promise<{ count: number; vramGb: number; name: string | null } | null> {
   // ── 1. Try nvidia-smi (Linux/Windows with NVIDIA GPU) ──
   try {
-    execSync('which nvidia-smi', { stdio: 'ignore' });
+    // Проверяем существует ли nvidia-smi (не блокируем event loop)
+    await execFileAsync('nvidia-smi', ['--query-gpu=count', '--format=csv,noheader,nounits'], { timeout: 5000 });
     // nvidia-smi exists — use it
-    const countStr = execSync('nvidia-smi --query-gpu=count --format=csv,noheader,nounits', {
-      encoding: 'utf-8',
-      timeout: 5000,
-    }).trim();
-    const count = parseInt(countStr.split('\n')[0], 10) || 0;
+    const { stdout: countStr } = await execFileAsync('nvidia-smi', ['--query-gpu=count', '--format=csv,noheader,nounits'], { timeout: 5000 });
+    const count = parseInt(countStr.trim().split('\n')[0], 10) || 0;
     if (count === 0) throw new Error('no GPUs');
 
-    const vramStr = execSync('nvidia-smi --query-gpu=memory.total --format=csv,noheader,nounits', {
-      encoding: 'utf-8',
-      timeout: 5000,
-    }).trim();
+    const { stdout: vramStr } = await execFileAsync('nvidia-smi', ['--query-gpu=memory.total', '--format=csv,noheader,nounits'], { timeout: 5000 });
     const vramMb = vramStr
+      .trim()
       .split('\n')
       .reduce((sum, line) => sum + (parseInt(line.trim(), 10) || 0), 0);
     const vramGb = vramMb / 1024;
 
-    const nameStr = execSync('nvidia-smi --query-gpu=name --format=csv,noheader', {
-      encoding: 'utf-8',
-      timeout: 5000,
-    }).trim();
-    const name = nameStr.split('\n')[0] || null;
+    const { stdout: nameStr } = await execFileAsync('nvidia-smi', ['--query-gpu=name', '--format=csv,noheader'], { timeout: 5000 });
+    const name = nameStr.trim().split('\n')[0] || null;
 
     return { count, vramGb, name };
   } catch {
@@ -140,10 +147,7 @@ function detectGpu(): { count: number; vramGb: number; name: string | null } | n
   // ── 2. Try macOS detection (Apple Silicon / Intel Mac with GPU) ──
   if (process.platform === 'darwin') {
     try {
-      const output = execSync('system_profiler SPDisplaysDataType -json', {
-        encoding: 'utf-8',
-        timeout: 5000,
-      });
+      const { stdout: output } = await execFileAsync('system_profiler', ['SPDisplaysDataType', '-json'], { timeout: 5000 });
       const data = JSON.parse(output);
       const gpus = data?.SPDisplaysDataType ?? [];
       if (gpus.length === 0) return null;
@@ -156,15 +160,12 @@ function detectGpu(): { count: number; vramGb: number; name: string | null } | n
         // Apple Silicon — unified memory. Get total RAM via sysctl.
         let vramGb = 8; // default fallback
         try {
-          const memBytes = parseInt(
-            execSync('sysctl -n hw.memsize', { encoding: 'utf-8', timeout: 5000 }).trim(),
-            10,
-          );
+          const { stdout: memStr } = await execFileAsync('sysctl', ['-n', 'hw.memsize'], { timeout: 5000 });
+          const memBytes = parseInt(memStr.trim(), 10);
           vramGb = memBytes / (1024 * 1024 * 1024);
         } catch { /* use fallback */ }
 
         // Conservative: use half of total RAM as "VRAM" for ML
-        // (the other half is needed for OS + app overhead)
         return {
           count: 1,
           vramGb: vramGb / 2,
@@ -285,8 +286,8 @@ export async function detectProfile(): Promise<CapabilityProfile | null> {
   // Get model details
   const { parameterSize, quantization } = await fetchModelDetails(modelName);
 
-  // Detect GPU
-  const gpu = detectGpu();
+  // Detect GPU (cached forever — GPU doesn't change)
+  const gpu = await detectGpu();
   const gpuCount = gpu?.count ?? 0;
   const vramGb = gpu?.vramGb ?? 0;
   const gpuName = gpu?.name ?? null;

@@ -281,6 +281,9 @@ model RLExperience {
 
   @@index([episodeId])
   @@index([createdAt])
+  // Phase 7.1: composite index для findLastIncompleteExperience —
+  // query: WHERE episodeId=? AND userResponded=false ORDER BY createdAt DESC LIMIT 1
+  @@index([episodeId, userResponded, createdAt])
 }
 
 // ============================================================================

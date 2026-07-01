@@ -83,11 +83,15 @@ export async function getAgentTask(id: string): Promise<AgentTask | null> {
   return task ? toAgentTask(task) : null;
 }
 
-export async function listAgentTasks(episodeId?: string): Promise<AgentTask[]> {
+/**
+ * List agent tasks — with optional episode filter and limit.
+ * Phase 7.1: limit configurable (раньше был захардкожен 50).
+ */
+export async function listAgentTasks(episodeId?: string, limit = 50): Promise<AgentTask[]> {
   const tasks = await db.agentTask.findMany({
     where: episodeId ? { episodeId } : undefined,
     orderBy: { createdAt: 'desc' },
-    take: 50,
+    take: limit,
   });
   return tasks.map(toAgentTask);
 }

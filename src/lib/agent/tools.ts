@@ -886,8 +886,17 @@ export function buildAgentTools(task: AgentTask): ToolSet {
  *       content (string, required): Полное содержимое
  *       mime (string, optional): MIME-тип
  */
+// Phase 7.2: кэш describeTools — описания не меняются между задачами.
+// Key = отсортированный список tool names. Value = готовая строка описания.
+const describeToolsCache = new Map<string, string>();
+
 export function describeTools(tools: ToolSet): string {
-  return Object.entries(tools)
+  // Кэш key — отсортированные имена инструментов
+  const cacheKey = Object.keys(tools).sort().join(',');
+  const cached = describeToolsCache.get(cacheKey);
+  if (cached !== undefined) return cached;
+
+  const result = Object.entries(tools)
     .map(([name, toolDef]) => {
       const lines: string[] = [`- ${name}`];
 
@@ -909,6 +918,9 @@ export function describeTools(tools: ToolSet): string {
       return lines.join('\n');
     })
     .join('\n');
+
+  describeToolsCache.set(cacheKey, result);
+  return result;
 }
 
 // ============================================================================

@@ -1,8 +1,14 @@
 import type { NextConfig } from "next";
+import path from "path";
 
 const nextConfig: NextConfig = {
   output: "standalone",
   reactStrictMode: true,
+  // Указываем workspace root явно — иначе Next.js warns:
+  // "We detected multiple lockfiles and selected the directory of /Users/ruslan/bun.lock as the root directory"
+  // Это происходит, когда у пользователя в родительских директориях лежат чужие bun.lock
+  // (например ~/bun.lock). Указывая __dirname, говорим Next: "наш проект — здесь".
+  outputFileTracingRoot: path.resolve(__dirname),
   serverExternalPackages: [
     'better-sqlite3',
     'onnxruntime-node',

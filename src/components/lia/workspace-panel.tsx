@@ -6,9 +6,10 @@
 // Пользователь может кликнуть на файл и увидеть его содержимое.
 // Обновляется автоматически при получении step_end событий.
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { File, Folder, FolderOpen, RefreshCw, ChevronRight, ChevronDown } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { useChatStore } from '@/stores/chat-store';
 
 type TreeNode = {
   name: string;
@@ -26,11 +27,22 @@ export function WorkspacePanel({ taskId }: { taskId: string | null }) {
   const [hasWorkspace, setHasWorkspace] = useState(false);
   const [expandedDirs, setExpandedDirs] = useState<Set<string>>(new Set());
 
+  // Подписка на статус активной задачи — чтобы остановить polling когда задача завершена.
+  const activeTaskStatus = useChatStore(s => s.activeTaskStatus);
+  // Отдельный ref для AbortController текущего fetch — избегаем race condition
+  // между двумя параллельными refresh().
+  const abortRef = useRef<AbortController | null>(null);
+
   const refresh = useCallback(async () => {
     if (!taskId) return;
+    // Abort previous in-flight refresh
+    if (abortRef.current) abortRef.current.abort();
+    const ac = new AbortController();
+    abortRef.current = ac;
+
     setLoading(true);
     try {
-      const res = await fetch(`/api/agent/${taskId}/workspace`);
+      const res = await fetch(`/api/agent/${taskId}/workspace`, { signal: ac.signal });
       if (!res.ok) return;
       const data = await res.json();
       setTree(data.tree ?? []);
@@ -38,24 +50,47 @@ export function WorkspacePanel({ taskId }: { taskId: string | null }) {
       if (selectedFile && data.fileContent !== undefined) {
         setFileContent(data.fileContent);
       }
-    } catch {
-      /* non-fatal */
+    } catch (e) {
+      // AbortError — это нормально (следующий refresh отменил предыдущий)
+      if ((e as Error).name !== 'AbortError') {
+        /* non-fatal */
+      }
     } finally {
-      setLoading(false);
+      if (!ac.signal.aborted) setLoading(false);
     }
   }, [taskId, selectedFile]);
 
   // Load tree on mount + when taskId changes
   useEffect(() => {
     refresh();
+    return () => {
+      if (abortRef.current) abortRef.current.abort();
+    };
   }, [refresh]);
 
-  // Auto-refresh every 3 seconds when task is running
+  // Auto-refresh every 8 seconds when task is running.
+  // Earlier: every 3s — caused MaxListenersExceededWarning after 30s of polling
+  // (11+ parallel sockets on the same agent stream). 8s is plenty for workspace
+  // updates which only happen between steps anyway.
+  // Stop polling entirely once task reaches a terminal state.
   useEffect(() => {
     if (!taskId) return;
-    const interval = setInterval(refresh, 3000);
+    // Terminal states — нет смысла продолжать polling.
+    const isTerminal = activeTaskStatus === 'done'
+      || activeTaskStatus === 'failed'
+      || activeTaskStatus === 'cancelled';
+    if (isTerminal) return;
+
+    const interval = setInterval(refresh, 8000);
     return () => clearInterval(interval);
-  }, [taskId, refresh]);
+  }, [taskId, refresh, activeTaskStatus]);
+
+  // Подписка на step_end через store — мгновенное обновление вместо ожидания
+  // следующего polling-tick. Store обновляется из SSE в useAgent.
+  const lastStepCount = useChatStore(s => s.activeTaskSteps.length);
+  useEffect(() => {
+    if (lastStepCount > 0) refresh();
+  }, [lastStepCount, refresh]);
 
   const loadFile = async (filePath: string) => {
     if (!taskId) return;

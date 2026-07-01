@@ -70,7 +70,45 @@ if (globalForVec.__vecDb) {
     `);
     db.exec(`CREATE INDEX IF NOT EXISTS idx_vec_rowid_map_episode ON vec_rowid_map(episode_id)`);
 
-    logger.info('db', 'vec_virtual + vec_rowid_map tables ready');
+    // ── Auto-create Prisma tables that vec operations depend on ──
+    // If user has an older DB file (created before VectorMemory / EmotionalMemory
+    // were added to schema), Prisma's `db push` was not run on it — and our
+    // raw SQL queries against VectorMemory fail with "no such table".
+    // We create them here as a fallback. Prisma's own client also creates
+    // them on first use IF the schema was pushed, so this is idempotent.
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS VectorMemory (
+        id         TEXT NOT NULL PRIMARY KEY,
+        episodeId  TEXT NOT NULL,
+        sourceType TEXT NOT NULL,
+        text       TEXT NOT NULL,
+        embedding  BLOB NOT NULL,
+        ts         DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_vectormemory_episodeId ON VectorMemory(episodeId)`);
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_vectormemory_sourceType ON VectorMemory(sourceType)`);
+
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS EmotionalMemory (
+        id                TEXT NOT NULL PRIMARY KEY,
+        episodeId         TEXT NOT NULL,
+        emotion           TEXT NOT NULL,
+        intensity         REAL NOT NULL DEFAULT 0.5,
+        trigger           TEXT NOT NULL,
+        context           TEXT NOT NULL,
+        emotionVectorJson TEXT,
+        embedding         BLOB,
+        consolidated      BOOLEAN NOT NULL DEFAULT 0,
+        sourceIds         TEXT,
+        ts                DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+      )
+    `);
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_emotionalmemory_episodeId ON EmotionalMemory(episodeId)`);
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_emotionalmemory_emotion ON EmotionalMemory(emotion)`);
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_emotionalmemory_intensity ON EmotionalMemory(intensity)`);
+
+    logger.info('db', 'vec_virtual + vec_rowid_map + Prisma tables ready');
   } catch (e) {
     logger.error('db', 'Failed to create vec tables', {}, e);
     throw e;

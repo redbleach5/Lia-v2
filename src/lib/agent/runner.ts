@@ -48,9 +48,17 @@ import { getMessages } from '@/lib/memory/episodes';
 // ============================================================================
 // Schemas — для structured output plan
 // ============================================================================
+// LLM-и часто возвращают steps как массив объектов { thought, action } вместо
+// массива строк. Zod-схема принимает оба формата и нормализует в string[].
+const planStepSchema = z.union([
+  z.string(),
+  z.object({ thought: z.string().optional(), action: z.string().optional(), step: z.string().optional() })
+    .transform(obj => obj.action ?? obj.step ?? obj.thought ?? '(без описания)'),
+]);
+
 const planSchema = z.object({
   goal: z.string().min(1).default('Выполнить задачу'),
-  steps: z.array(z.string()).default([]),
+  steps: z.array(planStepSchema).default([]),
   needsTools: z.boolean().default(true),
   complexity: z.enum(['low', 'medium', 'high']).default('medium').catch('medium'),
 });
@@ -667,7 +675,18 @@ ${task.fsScope ? `Рабочая директория: ${task.fsScope}` : 'Ра�
       maxOutputTokens: PLANNING_MAX_TOKENS,
       abortSignal: AbortSignal.timeout(LLM_TIMEOUT_MS),
       onError: (error) => {
-        logger.error('agent', 'Plan streamText onError', { taskGoal: task.goal.slice(0, 80) }, error);
+        // Vercel AI SDK onError callback receives a non-Error object.
+        // String(error) → "[object Object]" which is useless for debugging.
+        // Normalize: extract message, name, cause, stack.
+        const normalized = error instanceof Error
+          ? error
+          : {
+              name: (error as { name?: string })?.name ?? 'UnknownError',
+              message: (error as { message?: string })?.message
+                ?? (typeof error === 'string' ? error : JSON.stringify(error)),
+              stack: (error as { stack?: string })?.stack,
+            };
+        logger.error('agent', 'Plan streamText onError', { taskGoal: task.goal.slice(0, 80) }, normalized);
       },
     });
 
@@ -814,7 +833,17 @@ async function executeStep(
       maxOutputTokens: EXECUTION_MAX_TOKENS,
       abortSignal: AbortSignal.timeout(LLM_TIMEOUT_MS),
       onError: (error) => {
-        log.error('agent', `Step ${stepNum} streamText (with tools) onError`, { modelName }, error);
+        // Vercel AI SDK onError callback receives a non-Error object.
+        // Normalize so logger doesn't print "[object Object]".
+        const normalized = error instanceof Error
+          ? error
+          : {
+              name: (error as { name?: string })?.name ?? 'UnknownError',
+              message: (error as { message?: string })?.message
+                ?? (typeof error === 'string' ? error : JSON.stringify(error)),
+              stack: (error as { stack?: string })?.stack,
+            };
+        log.error('agent', `Step ${stepNum} streamText (with tools) onError`, { modelName }, normalized);
       },
       onStepFinish: ({ toolCalls: tcs, toolResults: trs }) => {
         if (tcs) {
@@ -867,7 +896,15 @@ async function executeStep(
       maxOutputTokens: EXECUTION_MAX_TOKENS,
       abortSignal: AbortSignal.timeout(LLM_TIMEOUT_MS),
       onError: (error) => {
-        log.error('agent', `Step ${stepNum} streamText (fallback) onError`, { modelName }, error);
+        const normalized = error instanceof Error
+          ? error
+          : {
+              name: (error as { name?: string })?.name ?? 'UnknownError',
+              message: (error as { message?: string })?.message
+                ?? (typeof error === 'string' ? error : JSON.stringify(error)),
+              stack: (error as { stack?: string })?.stack,
+            };
+        log.error('agent', `Step ${stepNum} streamText (fallback) onError`, { modelName }, normalized);
       },
     });
 

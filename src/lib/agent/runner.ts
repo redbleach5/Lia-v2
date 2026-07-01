@@ -711,6 +711,36 @@ ${task.fsScope ? `Рабочая директория: ${task.fsScope}` : 'Ра�
       });
       return fallbackPlan(task);
     }
+
+    // ── Sanity check: detect degenerate plans ──
+    // Слабые модели (Llama-3.1-8b, gemma) иногда генерируют 10 одинаковых шагов
+    // вроде `console.log('...')` × 10. Это бесполезно и тратит токены/время.
+    // Если ≥50% шагов идентичны (case-insensitive) — отбрасываем в пользу fallback.
+    const steps = validated.data.steps;
+    if (steps.length >= 3) {
+      const lowered = steps.map(s => s.trim().toLowerCase());
+      const counts = new Map<string, number>();
+      for (const s of lowered) counts.set(s, (counts.get(s) ?? 0) + 1);
+      const maxDup = Math.max(...counts.values());
+      if (maxDup / steps.length >= 0.5) {
+        logger.warn('agent', 'Plan: degenerate (too many duplicate steps), using fallback', {
+          stepsCount: steps.length,
+          maxDuplicateRatio: maxDup / steps.length,
+          sample: steps.slice(0, 3),
+        });
+        return fallbackPlan(task);
+      }
+    }
+
+    // ── Sanity check: cap steps to maxSteps ──
+    if (steps.length > task.maxSteps) {
+      validated.data.steps = steps.slice(0, task.maxSteps);
+      logger.warn('agent', 'Plan: truncated to maxSteps', {
+        original: steps.length,
+        capped: task.maxSteps,
+      });
+    }
+
     return validated.data;
   } catch (e) {
     logger.warn('agent', 'Plan generation failed — using fallback', { goal: task.goal.slice(0, 80) }, e);
@@ -822,6 +852,11 @@ async function executeStep(
   log.debug('agent', `executeStep — model=${modelName}, tryWithTools=${tryWithTools}`);
 
   // ── Attempt 1: with tools (native tool calling) ──
+  // streamError хранит последнюю ошибку из onError callback. Если result.text
+  // throws AI_NoOutputGeneratedError — это бесполезное "No output generated".
+  // Реальная причина (rate limit / 4xx от Groq) приходит в onError, и мы её
+  // логируем отдельно, а также пробрасываем в warn для отладки.
+  let streamError: Error | null = null;
   if (tryWithTools) {
     const result = streamText({
       model,
@@ -834,16 +869,25 @@ async function executeStep(
       abortSignal: AbortSignal.timeout(LLM_TIMEOUT_MS),
       onError: (error) => {
         // Vercel AI SDK onError callback receives a non-Error object.
-        // Normalize so logger doesn't print "[object Object]".
-        const normalized = error instanceof Error
+        // Convert to proper Error so pino serializers.err can extract
+        // message/stack/cause. Otherwise logger does `new Error(String(error))`
+        // which produces "[object Object]".
+        const err = error instanceof Error
           ? error
-          : {
-              name: (error as { name?: string })?.name ?? 'UnknownError',
-              message: (error as { message?: string })?.message
-                ?? (typeof error === 'string' ? error : JSON.stringify(error)),
-              stack: (error as { stack?: string })?.stack,
-            };
-        log.error('agent', `Step ${stepNum} streamText (with tools) onError`, { modelName }, normalized);
+          : new Error(
+              typeof error === 'string'
+                ? error
+                : (error as { message?: string })?.message
+                  ?? JSON.stringify(error),
+            );
+        // Preserve original props if it was an object (name, cause, etc)
+        if (error && typeof error === 'object' && !(error instanceof Error)) {
+          const e = error as { name?: string; cause?: unknown };
+          if (e.name) err.name = e.name;
+          if (e.cause !== undefined) (err as Error & { cause?: unknown }).cause = e.cause;
+        }
+        streamError = err;
+        log.error('agent', `Step ${stepNum} streamText (with tools) onError`, { modelName }, err);
       },
       onStepFinish: ({ toolCalls: tcs, toolResults: trs }) => {
         if (tcs) {
@@ -879,8 +923,15 @@ async function executeStep(
         toolCallsCount: toolCalls.length,
       });
     } catch (e) {
-      const msg = e instanceof Error ? e.message : String(e);
-      log.warn('agent', `Step ${stepNum} streamText (with tools) failed — retrying without tools`, { error: msg });
+      // Если есть streamError из onError — это реальная причина (rate limit, 4xx).
+      // `e` обычно AI_NoOutputGeneratedError с бесполезным "No output generated".
+      const realError = streamError ?? e;
+      const msg = realError instanceof Error ? realError.message : String(realError);
+      log.warn('agent', `Step ${stepNum} streamText (with tools) failed — retrying without tools`, {
+        error: msg,
+        errorName: realError instanceof Error ? realError.name : 'Unknown',
+        throwMessage: e instanceof Error ? e.message : String(e),
+      }, realError instanceof Error ? realError : undefined);
       fullText = '';
     }
   }
@@ -888,6 +939,7 @@ async function executeStep(
   // ── Attempt 2: without tools (text-only fallback) ──
   if (!fullText && toolCalls.length === 0) {
     log.info('agent', `Step ${stepNum} fallback to text-only mode`);
+    let fallbackStreamError: Error | null = null;
     const result = streamText({
       model,
       system: system + '\n\nВАЖНО: У тебя нет прямого доступа к инструментам. Вместо вызова инструмента, опиши в тексте какое действие нужно выполнить и почему.',
@@ -896,15 +948,21 @@ async function executeStep(
       maxOutputTokens: EXECUTION_MAX_TOKENS,
       abortSignal: AbortSignal.timeout(LLM_TIMEOUT_MS),
       onError: (error) => {
-        const normalized = error instanceof Error
+        const err = error instanceof Error
           ? error
-          : {
-              name: (error as { name?: string })?.name ?? 'UnknownError',
-              message: (error as { message?: string })?.message
-                ?? (typeof error === 'string' ? error : JSON.stringify(error)),
-              stack: (error as { stack?: string })?.stack,
-            };
-        log.error('agent', `Step ${stepNum} streamText (fallback) onError`, { modelName }, normalized);
+          : new Error(
+              typeof error === 'string'
+                ? error
+                : (error as { message?: string })?.message
+                  ?? JSON.stringify(error),
+            );
+        if (error && typeof error === 'object' && !(error instanceof Error)) {
+          const e = error as { name?: string; cause?: unknown };
+          if (e.name) err.name = e.name;
+          if (e.cause !== undefined) (err as Error & { cause?: unknown }).cause = e.cause;
+        }
+        fallbackStreamError = err;
+        log.error('agent', `Step ${stepNum} streamText (fallback) onError`, { modelName }, err);
       },
     });
 
@@ -915,8 +973,12 @@ async function executeStep(
         textLength: fullText.length,
       });
     } catch (e) {
-      fullText = `Ошибка: ${e instanceof Error ? e.message : String(e)}`;
-      log.error('agent', `Step ${stepNum} fallback streamText failed`, {}, e);
+      const realError = fallbackStreamError ?? e;
+      fullText = `Ошибка: ${realError instanceof Error ? realError.message : String(realError)}`;
+      log.error('agent', `Step ${stepNum} fallback streamText failed`, {
+        errorName: realError instanceof Error ? realError.name : 'Unknown',
+        throwMessage: e instanceof Error ? e.message : String(e),
+      }, realError instanceof Error ? realError : e instanceof Error ? e : undefined);
     }
   }
 

@@ -80,8 +80,23 @@ function log(
 ) {
   const payload: LogContext = { category, ...ctx };
   if (error !== undefined) {
-    // pino автоматически сериализует Error через serializers.err
-    payload.err = error instanceof Error ? error : new Error(String(error));
+    // pino автоматически сериализует Error через serializers.err.
+    // Если error — не Error (например, объект от Vercel AI SDK onError),
+    // преобразуем в Error с осмысленным сообщением вместо "[object Object]".
+    if (error instanceof Error) {
+      payload.err = error;
+    } else if (typeof error === 'string') {
+      payload.err = new Error(error);
+    } else if (error && typeof error === 'object') {
+      const e = error as { message?: string; name?: string; stack?: string; cause?: unknown };
+      const err = new Error(e.message ?? JSON.stringify(error));
+      if (e.name) err.name = e.name;
+      if (e.stack) err.stack = e.stack;
+      if (e.cause !== undefined) (err as Error & { cause?: unknown }).cause = e.cause;
+      payload.err = err;
+    } else {
+      payload.err = new Error(String(error));
+    }
   }
   pinoLogger[level](payload, message);
 }
@@ -108,7 +123,20 @@ export const logger = {
     ) => {
       const payload: LogContext = { category, ...extra };
       if (error !== undefined) {
-        payload.err = error instanceof Error ? error : new Error(String(error));
+        if (error instanceof Error) {
+          payload.err = error;
+        } else if (typeof error === 'string') {
+          payload.err = new Error(error);
+        } else if (error && typeof error === 'object') {
+          const e = error as { message?: string; name?: string; stack?: string; cause?: unknown };
+          const err = new Error(e.message ?? JSON.stringify(error));
+          if (e.name) err.name = e.name;
+          if (e.stack) err.stack = e.stack;
+          if (e.cause !== undefined) (err as Error & { cause?: unknown }).cause = e.cause;
+          payload.err = err;
+        } else {
+          payload.err = new Error(String(error));
+        }
       }
       child[level](payload, message);
     };

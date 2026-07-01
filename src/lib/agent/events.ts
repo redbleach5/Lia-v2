@@ -68,7 +68,11 @@ export function subscribeToTask(taskId: string, listener: (event: AgentEvent) =>
  * Get all events that have been buffered for a task (for replay on SSE reconnect).
  * Limited to last 100 events per task to bound memory.
  */
-const eventBuffer = new Map<string, AgentEvent[]>();
+// HMR-safe: храним на globalThis, чтобы переживало hot-reload в dev.
+const globalForBuffer = globalThis as unknown as { __liaEventBuffer?: Map<string, AgentEvent[]> };
+const eventBuffer: Map<string, AgentEvent[]> =
+  globalForBuffer.__liaEventBuffer ?? new Map<string, AgentEvent[]>();
+globalForBuffer.__liaEventBuffer = eventBuffer;
 const BUFFER_LIMIT = 100;
 
 export function bufferEvent(event: AgentEvent) {
@@ -92,7 +96,11 @@ export function clearBuffer(taskId: string) {
 // TTL: cleared automatically 1h after signalCancellation, чтобы Set не рос бесконечно.
 // 1h достаточно, чтобы runner заметил cancel, но не настолько долго, чтобы
 // накопились сотни устаревших ID.
-const cancelledTasks = new Map<string, number>(); // taskId → cancelledAt timestamp
+// HMR-safe: тоже на globalThis.
+const globalForCancelled = globalThis as unknown as { __liaCancelledTasks?: Map<string, number> };
+const cancelledTasks: Map<string, number> =
+  globalForCancelled.__liaCancelledTasks ?? new Map<string, number>();
+globalForCancelled.__liaCancelledTasks = cancelledTasks;
 const CANCELLATION_TTL_MS = 60 * 60 * 1000; // 1 час
 
 export function signalCancellation(taskId: string) {
@@ -130,7 +138,17 @@ type WaitingInput = {
   resolve: (answer: string) => void;
   reject: (err: Error) => void;
 };
-const waitingTasks = new Map<string, WaitingInput>();
+
+// ── HMR-safe storage ──
+// В Next.js dev mode webpack hot-reload перезагружает серверные модули, что
+// создаёт новый экземпляр Map и теряет все in-flight waiting promises.
+// Чтобы пережить HMR, храним Map на globalThis — он переживает reload.
+const globalForWaiting = globalThis as unknown as {
+  __liaWaitingTasks?: Map<string, WaitingInput>;
+};
+const waitingTasks: Map<string, WaitingInput> =
+  globalForWaiting.__liaWaitingTasks ?? new Map<string, WaitingInput>();
+globalForWaiting.__liaWaitingTasks = waitingTasks;
 
 export function setWaiting(taskId: string, w: WaitingInput) {
   waitingTasks.set(taskId, w);

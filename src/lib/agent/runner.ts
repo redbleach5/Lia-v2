@@ -797,7 +797,7 @@ async function executeStep(
   const toolCalls: Array<{ name: string; input: unknown; output: unknown; success: boolean }> = [];
 
   const modelName = await getModelName();
-  const knownBadToolModels = ['gemma3:4b', 'gemma3:1b', 'phi3', 'tinyllama'];
+  const knownBadToolModels = ['gemma3:4b', 'gemma3:1b', 'phi3', 'tinyllama', 'gemma2-9b-it', 'llama-3.2-3b-preview', 'llama-3.2-1b-preview'];
   const tryWithTools = !knownBadToolModels.some(m => modelName.includes(m));
 
   log.debug('agent', `executeStep — model=${modelName}, tryWithTools=${tryWithTools}`);

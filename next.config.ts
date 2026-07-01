@@ -10,6 +10,12 @@ const nextConfig: NextConfig = {
     'pino',
     'pino-pretty',
   ],
+  // VRM models can be up to 50MB — allow large uploads
+  experimental: {
+    serverActions: {
+      bodySizeLimit: '50mb',
+    },
+  },
 };
 
 export default nextConfig;

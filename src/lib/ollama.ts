@@ -32,13 +32,14 @@ let currentGroqApiKey = process.env.GROQ_API_KEY || '';
 let currentGroqModel = process.env.GROQ_MODEL || 'llama-3.3-70b-versatile';
 
 // Groq available models (hardcoded — Groq has a fixed catalog)
+// supportsTools: только llama-3.x и mixtral поддерживают function calling.
 export const GROQ_MODELS = [
-  { id: 'llama-3.3-70b-versatile', label: 'Llama 3.3 70B', desc: 'Самый умный, медленнее' },
-  { id: 'llama-3.1-8b-instant', label: 'Llama 3.1 8B', desc: 'Быстрый, для простых задач' },
-  { id: 'llama-3.2-3b-preview', label: 'Llama 3.2 3B', desc: 'Очень быстрый, базовый' },
-  { id: 'llama-3.2-1b-preview', label: 'Llama 3.2 1B', desc: 'Молниеносный, минимальный' },
-  { id: 'mixtral-8x7b-32768', label: 'Mixtral 8x7B', desc: 'MoE, 32K context' },
-  { id: 'gemma2-9b-it', label: 'Gemma 2 9B', desc: 'Google, сбалансированный' },
+  { id: 'llama-3.3-70b-versatile', label: 'Llama 3.3 70B', desc: 'Самый умный, поддерживает tools' },
+  { id: 'llama-3.1-8b-instant', label: 'Llama 3.1 8B', desc: 'Быстрый, поддерживает tools' },
+  { id: 'mixtral-8x7b-32768', label: 'Mixtral 8x7B', desc: 'MoE, 32K context, поддерживает tools' },
+  { id: 'gemma2-9b-it', label: 'Gemma 2 9B', desc: 'Google, без tools (только текст)' },
+  { id: 'llama-3.2-3b-preview', label: 'Llama 3.2 3B', desc: 'Быстрый, без tools' },
+  { id: 'llama-3.2-1b-preview', label: 'Llama 3.2 1B', desc: 'Молниеносный, без tools' },
 ];
 
 let currentBaseUrl = DEFAULT_BASE_URL;
@@ -155,7 +156,7 @@ export async function setOllamaSettings(params: {
   if (params.embedModel !== undefined) {
     currentEmbedModel = params.embedModel;
     if (params.embedModel === '') {
-      await db.setting.delete({ where: { key: 'ollama_embed_model' } }).catch(() => null);
+      await db.setting.deleteMany({ where: { key: 'ollama_embed_model' } });
     } else {
       await db.setting.upsert({
         where: { key: 'ollama_embed_model' },
@@ -179,7 +180,7 @@ export async function setOllamaSettings(params: {
   if (params.groqApiKey !== undefined) {
     currentGroqApiKey = params.groqApiKey;
     if (params.groqApiKey === '') {
-      await db.setting.delete({ where: { key: 'groq_api_key' } }).catch(() => null);
+      await db.setting.deleteMany({ where: { key: 'groq_api_key' } });
     } else {
       await db.setting.upsert({
         where: { key: 'groq_api_key' },

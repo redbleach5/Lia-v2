@@ -67,8 +67,9 @@ export type ChatPipelineResult = {
   response: Response;
 };
 
-// Модели, у которых отключён tool calling (известные проблемы с поддержкой).
-const NO_TOOL_MODELS = ['gemma3:4b', 'gemma3:1b', 'phi3', 'tinyllama'];
+// Модели без tool calling support (Ollama + Groq).
+// Groq: gemma2-9b-it, llama-3.2-*-preview не поддерживают function calling.
+const NO_TOOL_MODELS = ['gemma3:4b', 'gemma3:1b', 'phi3', 'tinyllama', 'gemma2-9b-it', 'llama-3.2-3b-preview', 'llama-3.2-1b-preview'];
 
 export async function runChatPipeline(input: ChatPipelineInput): Promise<ChatPipelineResult | NextResponse> {
   const { text, episodeId, mode: userMode } = input;
@@ -158,10 +159,12 @@ export async function runChatPipeline(input: ChatPipelineInput): Promise<ChatPip
   autoTitleEpisode(episodeId, text).catch(() => null);
 
   // ── 9. Build context (parallel) ──
+  // recall/recallEmotionalAnchors могут падать если embed model недоступна —
+  // оборачиваем в catch, чат продолжается без векторной памяти.
   const [globalFacts, episodeFacts, vectorHits, agentTasks, emotionalRecall] = await Promise.all([
     getAllGlobalFacts(),
     getEpisodeFacts(episodeId),
-    recall({ episodeId, query: text, limit: 3, minSimilarity: 0.35 }),
+    recall({ episodeId, query: text, limit: 3, minSimilarity: 0.35 }).catch(() => []),
     listAgentTasks(episodeId),
     recallEmotionalAnchors({ episodeId, queryText: text, currentEmotion: perceivedEmotion, limit: 3 })
       .catch(() => ({ anchors: [], warning: null })),
@@ -247,7 +250,13 @@ export async function runChatPipeline(input: ChatPipelineInput): Promise<ChatPip
     maxOutputTokens: plan.maxTokens,
     topP: 0.9,
     onError: (error) => {
-      log.error('chat', 'streamText onError', {}, error);
+      // Groq/API errors come as objects — stringify for readable log
+      const errMsg = error instanceof Error
+        ? error.message
+        : typeof error === 'object' && error !== null
+          ? JSON.stringify(error)
+          : String(error);
+      log.error('chat', 'streamText onError', { errorStr: errMsg }, error instanceof Error ? error : undefined);
     },
     onFinish: async ({ text: fullText, usage }) => {
       await persistResponse({

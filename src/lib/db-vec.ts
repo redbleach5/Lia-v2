@@ -182,15 +182,22 @@ export function insertVectorMemory(params: {
 }
 
 /**
- * Hash a string to a 32-bit integer for use as vec0 rowid.
- * Collisions are possible but extremely rare for UUIDs.
+ * Hash a string to a 31-bit positive integer for use as vec0 rowid.
+ *
+ * Returns BigInt because sqlite-vec v0.1.9 strictly checks sqlite3_value_type
+ * == SQLITE_INTEGER. better-sqlite3 binds JS Number as float64 (REAL), which
+ * vec0 rejects with "Only integers are allowed for primary key values on
+ * vec_virtual". BigInt binds as SQLITE_INTEGER.
+ *
+ * Masking with 0x7FFFFFFF guarantees a positive 31-bit integer in [0, 2^31-1]
+ * to avoid INT32_MIN edge case where Math.abs overflows.
  */
-function hashToRowid(s: string): number {
+function hashToRowid(s: string): bigint {
   let h = 0;
   for (let i = 0; i < s.length; i++) {
     h = (h * 31 + s.charCodeAt(i)) | 0;
   }
-  return Math.abs(h);
+  return BigInt(h & 0x7FFFFFFF);
 }
 
 /**
@@ -234,7 +241,7 @@ export function searchVectorsInEpisode(params: {
       : [episodeId, embeddingStr, limit, 1 - minSimilarity];
 
     const rows = stmt.all(...bindParams) as Array<{
-      rowid: number;
+      rowid: number | bigint;
       distance: number;
       id: string;
     }>;
@@ -285,7 +292,7 @@ export function searchVectorsInEpisode(params: {
  */
 export function deleteVectorsInEpisode(episodeId: string): void {
   const txn = db.transaction(() => {
-    const rowids = db.prepare('SELECT rowid FROM vec_rowid_map WHERE episode_id = ?').all(episodeId) as Array<{ rowid: number }>;
+    const rowids = db.prepare('SELECT rowid FROM vec_rowid_map WHERE episode_id = ?').all(episodeId) as Array<{ rowid: number | bigint }>;
     if (rowids.length > 0) {
       const placeholders = rowids.map(() => '?').join(',');
       db.prepare(`DELETE FROM vec_virtual WHERE rowid IN (${placeholders})`).run(...rowids.map(r => r.rowid));
@@ -364,7 +371,7 @@ export function searchEmotionalVectorsInEpisode(params: {
         AND v.distance <= ?
       ORDER BY v.distance
     `).all(episodeId, embeddingStr, limit, maxDistance) as Array<{
-      rowid: number;
+      rowid: number | bigint;
       distance: number;
       id: string;
     }>;
@@ -387,7 +394,7 @@ export function deleteEmotionalVectorsByEpisodeId(episodeId: string): void {
       SELECT v.rowid FROM vec_virtual v
       JOIN vec_rowid_map m ON v.rowid = m.rowid
       WHERE m.episode_id = ? AND v.source_type = 'emotional'
-    `).all(episodeId) as Array<{ rowid: number }>;
+    `).all(episodeId) as Array<{ rowid: number | bigint }>;
 
     if (rowids.length > 0) {
       const placeholders = rowids.map(() => '?').join(',');

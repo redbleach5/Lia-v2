@@ -255,11 +255,12 @@ export async function runChatPipeline(input: ChatPipelineInput): Promise<ChatPip
     // нужен step 2. С isStepCount(1) стрим завершался СРАЗУ после tool call
     // → пользователь получал пустой ответ (responseLength: 0).
     //
-    // Chat mode: 2 шага (1 tool call + 1 ответ). Этого достаточно для
-    // простых запросов с одним инструментом.
+    // Chat mode: 3 шага — хватает на web_search + fetch_page + ответ.
+    // С 2 шагами модель могла сделать web_search + fetch_page, но не успевала
+    // написать ответ. С 3 шагами: web_search → fetch_page → текстовый ответ.
     // Agent mode: 5 шагов (множественные tool calls в одной задаче).
     stopWhen: (plan.toolsEnabled && toolsSupported)
-      ? (userMode === 'agent' ? isStepCount(5) : isStepCount(2))
+      ? (userMode === 'agent' ? isStepCount(5) : isStepCount(3))
       : isStepCount(1),
     temperature: 0.7,
     maxOutputTokens: plan.maxTokens,

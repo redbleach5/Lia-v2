@@ -8,6 +8,7 @@ import 'server-only';
 import { tool } from 'ai';
 import { z } from 'zod';
 import { webSearch } from './web-search';
+import { fetchPage } from './web-search';
 import { saveArtifact } from './save-artifact';
 
 // ============================================================================
@@ -20,6 +21,30 @@ const webSearchTool = tool({
   }),
   execute: async ({ query }) => {
     return await webSearch(query);
+  },
+});
+
+// ============================================================================
+// fetch_page — чтение содержимого веб-страницы
+// ============================================================================
+// ВАЖНО: этот инструмент критичен для ответов на новостные/фактологические
+// запросы. web_search возвращает только короткие snippets (~150 символов),
+// которых недостаточно для конкретного ответа. Без fetch_page модель видит
+// только заголовки и краткие выдержки — и отвечает общими фразами или
+// отказом ("я не могу дать точную информацию").
+//
+// С fetch_page модель может:
+//   1) web_search "GTA 6 новости" → получить 10 ссылок
+//   2) fetch_page на топ-2 ссылки → прочитать полный текст статьи
+//   3) Сформировать конкретный ответ с датами, цифрами, фактами
+const fetchPageTool = tool({
+  description: 'Загрузить веб-страницу и извлечь читаемый текст. Используй ПОСЛЕ web_search чтобы прочитать содержимое конкретной страницы из результатов поиска. Возвращает текст (до 5000 символов) без HTML-тегов. Нужен для конкретных новостей, документации API, туториалов — web_search даёт только короткие snippets.',
+  inputSchema: z.object({
+    url: z.string().min(1).describe('Полный URL страницы для чтения (из результата web_search)'),
+    maxChars: z.number().optional().describe('Максимум символов текста (по умолчанию 5000)'),
+  }),
+  execute: async ({ url, maxChars }) => {
+    return await fetchPage(url, maxChars);
   },
 });
 
@@ -43,7 +68,11 @@ const saveArtifactTool = tool({
 // ============================================================================
 // Registry — экспортируем объект для передачи в streamText
 // ============================================================================
+// Chat mode: web_search + fetch_page + save_artifact (3 инструмента).
+// Agent mode: дополнительно read_file/write_file/edit_file/list_dir/code_run/
+//             http_request/spawn_subagent — настраивается в lib/agent/tools.ts
 export const tools = {
   web_search: webSearchTool,
+  fetch_page: fetchPageTool,
   save_artifact: saveArtifactTool,
 };

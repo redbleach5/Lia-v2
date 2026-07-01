@@ -21,6 +21,9 @@ const AlertDialogContent = React.forwardRef<
         'data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0',
         className,
       )}
+      // Default to undefined so Radix doesn't warn about missing Description.
+      // Callers can still pass their own aria-describedby to override.
+      aria-describedby={undefined}
       {...props}
     />
   </AlertDialogPrimitive.Portal>

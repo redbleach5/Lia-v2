@@ -8,8 +8,15 @@
 //
 // Зачем не SVG: SVG даёт рваную анимацию (CSS transforms на path). PixiJS
 // использует WebGL — 60 fps, плавные переходы, shader-эффекты.
+//
+// ЗАЩИТА ОТ СБОЕВ GPU:
+// На некоторых драйверах PixiJS падает при создании WebGL-контекста с ошибкой
+// `Invalid value of 0 passed to checkMaxIfStatementsInShader` — GPU детектируется
+// как слишком слабое, и лимит if-операторов в шейдере считается равным 0.
+// Стратегия: 1) пробуем WebGL, 2) на провал — Canvas2D fallback, 3) на полный
+// провал — простой SVG-аватар без WebGL/PixiJS.
 
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { EmotionVector } from '@/lib/personality';
 
 export type Live2DAvatarProps = {
@@ -24,6 +31,8 @@ export function Live2DAvatar({ emotion, speaking = false, size = 280, src }: Liv
   // Pixi v6 Application — тип конструктора не подходит под ReturnType, используем any
   const appRef = useRef<any>(null);
   const modelRef = useRef<Live2DModelProxy | null>(null);
+  // Состояние фоллбэка: если PixiJS не смог создаться — рисуем SVG.
+  const [pixiFailed, setPixiFailed] = useState(false);
 
   // Init PixiJS app + draw stylized avatar
   useEffect(() => {
@@ -36,11 +45,13 @@ export function Live2DAvatar({ emotion, speaking = false, size = 280, src }: Liv
 
       // Destroy old app if exists
       if (appRef.current) {
-        appRef.current.destroy(true);
+        try { appRef.current.destroy(true); } catch { /* ignore */ }
         appRef.current = null;
       }
 
-      const app = new PIXI.Application({
+      // ── Пытаемся создать PIXI.Application — сначала WebGL, потом Canvas2D ──
+      let app: any = null;
+      const baseOpts = {
         view: canvasRef.current,
         backgroundAlpha: 0,
         width: size,
@@ -48,9 +59,23 @@ export function Live2DAvatar({ emotion, speaking = false, size = 280, src }: Liv
         antialias: true,
         resolution: window.devicePixelRatio || 1,
         autoDensity: true,
-      });
+      };
+
+      try {
+        app = new PIXI.Application(baseOpts);
+      } catch (webglErr) {
+        console.warn('[Live2DAvatar] WebGL renderer failed, retrying with forceCanvas:', webglErr);
+        try {
+          app = new PIXI.Application({ ...baseOpts, forceCanvas: true });
+        } catch (canvasErr) {
+          console.error('[Live2DAvatar] Canvas renderer also failed, falling back to SVG:', canvasErr);
+          setPixiFailed(true);
+          return;
+        }
+      }
+
       if (cancelled) {
-        app.destroy(true);
+        try { app.destroy(true); } catch { /* ignore */ }
         return;
       }
       appRef.current = app;
@@ -93,7 +118,7 @@ export function Live2DAvatar({ emotion, speaking = false, size = 280, src }: Liv
     return () => {
       cancelled = true;
       if (appRef.current) {
-        appRef.current.destroy(true);
+        try { appRef.current.destroy(true); } catch { /* ignore */ }
         appRef.current = null;
       }
       modelRef.current = null;
@@ -165,9 +190,56 @@ export function Live2DAvatar({ emotion, speaking = false, size = 280, src }: Liv
     return () => cancelAnimationFrame(raf);
   }, []);
 
+  // ── Полный SVG-фоллбэк — когда PixiJS вообще не работает ──
+  if (pixiFailed) {
+    return <SvgAvatar emotion={emotion} speaking={speaking} size={size} />;
+  }
+
   return (
     <div style={{ width: size, height: size }} className="relative">
       <canvas ref={canvasRef} style={{ width: size, height: size }} />
+    </div>
+  );
+}
+
+// ============================================================================
+// SvgAvatar — простой SVG-фоллбэк без WebGL. Используется только если PixiJS
+// не смог создаться (например, broken GPU drivers).
+// ============================================================================
+function SvgAvatar({ emotion, speaking, size }: { emotion: EmotionVector; speaking: boolean; size: number }) {
+  const cx = size / 2;
+  const cy = size / 2;
+  const smile = (emotion.joy - emotion.sadness - emotion.irritation * 0.5) * 8;
+  const mouthOpen = speaking ? 0.4 + Math.abs(Math.sin(Date.now() / 90)) * 0.4 : 0;
+
+  return (
+    <div style={{ width: size, height: size }} className="relative">
+      <svg width={size} height={size} viewBox={`0 0 ${size} ${size}`}>
+        {/* aura */}
+        <circle cx={cx} cy={cy} r={size * 0.45} fill="#8b5cf6" opacity={0.1} />
+        {/* hair back */}
+        <ellipse cx={cx} cy={cy - 5} rx={75} ry={95} fill="#8b5cf6" />
+        {/* head */}
+        <ellipse cx={cx} cy={cy} rx={55} ry={70} fill="#fde4d3" />
+        {/* hair front */}
+        <rect x={cx - 60} y={cy - 65} width={120} height={35} rx={20} fill="#7c3aed" />
+        {/* eyes */}
+        <ellipse cx={cx - 22} cy={cy - 5} rx={9} ry={11} fill="#fff" />
+        <ellipse cx={cx + 22} cy={cy - 5} rx={9} ry={11} fill="#fff" />
+        <circle cx={cx - 22} cy={cy - 5} r={4} fill="#6d28d9" />
+        <circle cx={cx + 22} cy={cy - 5} r={4} fill="#6d28d9" />
+        {/* mouth */}
+        {mouthOpen > 0.1 ? (
+          <ellipse cx={cx} cy={cy + 30} rx={10} ry={4 + mouthOpen * 6} fill="#c26647" />
+        ) : (
+          <path
+            d={`M ${cx - 12} ${cy + 30} Q ${cx} ${cy + 30 + smile} ${cx + 12} ${cy + 30}`}
+            stroke="#c26647"
+            strokeWidth={2}
+            fill="none"
+          />
+        )}
+      </svg>
     </div>
   );
 }

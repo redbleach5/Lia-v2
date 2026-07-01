@@ -25,7 +25,7 @@ import 'server-only';
 
 import { streamText, isStepCount, type ModelMessage } from 'ai';
 import { NextResponse } from 'next/server';
-import { getChatModel, checkOllamaHealth, getOllamaSettings } from '@/lib/ollama';
+import { getChatModel, checkOllamaHealth, getOllamaSettings, getModelName } from '@/lib/ollama';
 import { buildSystemPrompt } from '@/lib/system-prompt';
 import { tools } from '@/lib/tools';
 import { db } from '@/lib/db';
@@ -78,21 +78,35 @@ export async function runChatPipeline(input: ChatPipelineInput): Promise<ChatPip
     textPreview: text.slice(0, 80),
   });
 
-  // ── 1. Pre-flight: Ollama availability ──
-  const preflightHealth = await checkOllamaHealth();
-  if (!preflightHealth.ok) {
-    log.warn('ollama', 'Pre-flight failed — Ollama unavailable', { error: preflightHealth.error });
-    return NextResponse.json({
-      error: 'Ollama недоступен. Запусти `ollama serve` или проверь URL в настройках.',
-      details: preflightHealth.error ?? 'unknown error',
-      ollamaUrl: (await getOllamaSettings()).baseUrl,
-    }, { status: 503 });
-  }
-  if (preflightHealth.models.length === 0) {
-    log.warn('ollama', 'Pre-flight failed — no models');
-    return NextResponse.json({
-      error: 'В Ollama нет моделей. Скачай хотя бы одну: `ollama pull qwen2.5:7b`.',
-    }, { status: 503 });
+  // ── 1. Pre-flight: LLM availability ──
+  const settings = await getOllamaSettings();
+
+  if (settings.provider === 'groq') {
+    // Groq mode — не нужен Ollama для чата, но нужен для embeddings.
+    // Проверяем только что API key задан.
+    if (!settings.groqApiKey || settings.groqApiKey === '') {
+      return NextResponse.json({
+        error: 'Groq API key не задан. Открой Настройки → Модель и введи ключ.',
+      }, { status: 503 });
+    }
+    log.info('llm', 'Pre-flight: using Groq', { model: settings.groqModel });
+  } else {
+    // Ollama mode — full health check
+    const preflightHealth = await checkOllamaHealth();
+    if (!preflightHealth.ok) {
+      log.warn('ollama', 'Pre-flight failed — Ollama unavailable', { error: preflightHealth.error });
+      return NextResponse.json({
+        error: 'Ollama недоступен. Запусти `ollama serve` или проверь URL в настройках.',
+        details: preflightHealth.error ?? 'unknown error',
+        ollamaUrl: settings.baseUrl,
+      }, { status: 503 });
+    }
+    if (preflightHealth.models.length === 0) {
+      log.warn('ollama', 'Pre-flight failed — no models');
+      return NextResponse.json({
+        error: 'В Ollama нет моделей. Скачай хотя бы одну: `ollama pull qwen2.5:7b`.',
+      }, { status: 503 });
+    }
   }
 
   // ── 2. Capability profile ──
@@ -212,7 +226,7 @@ export async function runChatPipeline(input: ChatPipelineInput): Promise<ChatPip
   const model = await getChatModel();
   const startTime = Date.now();
   const toolCallLog: Array<{ name: string; input: unknown; output: unknown }> = [];
-  const modelName = (model as unknown as { modelId?: string }).modelId ?? '';
+  const modelName = await getModelName();
   const toolsSupported = !NO_TOOL_MODELS.some(m => modelName.includes(m));
 
   // Capture для onFinish callback

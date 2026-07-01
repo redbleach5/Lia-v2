@@ -1,6 +1,6 @@
 import 'server-only';
 
-// Ollama client via @ai-sdk/openai-compatible.
+// LLM provider — Ollama (local) или Groq (cloud, для тестирования).
 //
 // AI SDK gives us:
 //   - streamText with tool calling (one LLM call does decideTool + speak + execute)
@@ -8,19 +8,38 @@ import 'server-only';
 //   - prefix caching (Ollama's KV-cache)
 //   - structured outputs via Zod schemas
 //
-// We expose a single `model` object that AI SDK functions accept.
+// Groq: https://api.groq.com/openai/v1 — OpenAI-compatible, fast inference.
+// Embeddings ВСЕГДА через Ollama (у Groq нет embedding-моделей).
 
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible';
 import { db } from './db';
 import { logger } from './logger';
 
 // ============================================================================
-// Settings persistence — load Ollama URL/model from DB on first call.
+// Settings persistence — load from DB on first call.
 // ============================================================================
 
 const DEFAULT_BASE_URL = process.env.OLLAMA_BASE_URL || 'http://127.0.0.1:11434';
 const DEFAULT_MODEL = process.env.OLLAMA_MODEL || 'qwen2.5:7b';
 const DEFAULT_EMBED_MODEL = process.env.OLLAMA_EMBED_MODEL || 'nomic-embed-text';
+
+// LLM provider: 'ollama' (default) или 'groq'
+let currentProvider: 'ollama' | 'groq' = 'ollama';
+
+// Groq settings
+const GROQ_BASE_URL = 'https://api.groq.com/openai/v1';
+let currentGroqApiKey = process.env.GROQ_API_KEY || '';
+let currentGroqModel = process.env.GROQ_MODEL || 'llama-3.3-70b-versatile';
+
+// Groq available models (hardcoded — Groq has a fixed catalog)
+export const GROQ_MODELS = [
+  { id: 'llama-3.3-70b-versatile', label: 'Llama 3.3 70B', desc: 'Самый умный, медленнее' },
+  { id: 'llama-3.1-8b-instant', label: 'Llama 3.1 8B', desc: 'Быстрый, для простых задач' },
+  { id: 'llama-3.2-3b-preview', label: 'Llama 3.2 3B', desc: 'Очень быстрый, базовый' },
+  { id: 'llama-3.2-1b-preview', label: 'Llama 3.2 1B', desc: 'Молниеносный, минимальный' },
+  { id: 'mixtral-8x7b-32768', label: 'Mixtral 8x7B', desc: 'MoE, 32K context' },
+  { id: 'gemma2-9b-it', label: 'Gemma 2 9B', desc: 'Google, сбалансированный' },
+];
 
 let currentBaseUrl = DEFAULT_BASE_URL;
 let currentModel = DEFAULT_MODEL;
@@ -46,18 +65,30 @@ async function loadSettings(): Promise<void> {
         } else if (row.key === 'ollama_embed_model' && currentEmbedModel !== row.value) {
           currentEmbedModel = row.value;
           changed = true;
+        } else if (row.key === 'llm_provider') {
+          currentProvider = row.value === 'groq' ? 'groq' : 'ollama';
+          changed = true;
+        } else if (row.key === 'groq_api_key' && currentGroqApiKey !== row.value) {
+          currentGroqApiKey = row.value;
+          changed = true;
+        } else if (row.key === 'groq_model' && currentGroqModel !== row.value) {
+          currentGroqModel = row.value;
+          changed = true;
         }
       }
       settingsLoaded = true;
       if (changed) {
-        logger.debug('ollama', 'Settings loaded from DB', {
+        logger.debug('llm', 'Settings loaded from DB', {
+          provider: currentProvider,
           baseUrl: currentBaseUrl,
           model: currentModel,
           embedModel: currentEmbedModel || 'auto',
+          groqModel: currentGroqModel,
+          groqKeySet: !!currentGroqApiKey,
         });
       }
     } catch (e) {
-      logger.warn('ollama', 'Failed to load settings — using env defaults', {
+      logger.warn('llm', 'Failed to load settings — using env defaults', {
         baseUrl: currentBaseUrl,
         model: currentModel,
       }, e);
@@ -87,6 +118,9 @@ export async function getOllamaSettings() {
     baseUrl: currentBaseUrl,
     model: currentModel,
     embedModel: currentEmbedModel || 'auto',
+    provider: currentProvider,
+    groqApiKey: currentGroqApiKey ? '***set***' : '',
+    groqModel: currentGroqModel,
   };
 }
 
@@ -94,9 +128,10 @@ export async function setOllamaSettings(params: {
   baseUrl?: string;
   model?: string;
   embedModel?: string;
+  provider?: 'ollama' | 'groq';
+  groqApiKey?: string;
+  groqModel?: string;
 }) {
-  // Помечаем что настройки загружены — иначе параллельный loadSettings()
-  // может перезаписать только что сохранённые значения дефолтами из env.
   settingsLoaded = true;
 
   if (params.baseUrl !== undefined) {
@@ -106,7 +141,6 @@ export async function setOllamaSettings(params: {
       create: { key: 'ollama_base_url', value: currentBaseUrl },
       update: { value: currentBaseUrl },
     });
-    // Инвалидируем кэш провайдера — новый URL требует пересоздания.
     provider = null;
     providerBaseUrl = '';
   }
@@ -119,7 +153,6 @@ export async function setOllamaSettings(params: {
     });
   }
   if (params.embedModel !== undefined) {
-    // Empty string means "auto" — clear the stored value so embed() will auto-detect
     currentEmbedModel = params.embedModel;
     if (params.embedModel === '') {
       await db.setting.delete({ where: { key: 'ollama_embed_model' } }).catch(() => null);
@@ -131,68 +164,116 @@ export async function setOllamaSettings(params: {
       });
     }
   }
-  // ВСЕГДА инвалидируем health cache при смене настроек, чтобы UI и pre-flight
-  // проверки видели актуальное состояние, а не 30-секундный кэш.
+  if (params.provider !== undefined) {
+    currentProvider = params.provider;
+    await db.setting.upsert({
+      where: { key: 'llm_provider' },
+      create: { key: 'llm_provider', value: currentProvider },
+      update: { value: currentProvider },
+    });
+    // Инвалидируем провайдер при переключении
+    provider = null;
+    providerBaseUrl = '';
+    groqProvider = null;
+  }
+  if (params.groqApiKey !== undefined) {
+    currentGroqApiKey = params.groqApiKey;
+    if (params.groqApiKey === '') {
+      await db.setting.delete({ where: { key: 'groq_api_key' } }).catch(() => null);
+    } else {
+      await db.setting.upsert({
+        where: { key: 'groq_api_key' },
+        create: { key: 'groq_api_key', value: currentGroqApiKey },
+        update: { value: currentGroqApiKey },
+      });
+    }
+    groqProvider = null;  // пересоздать с новым ключом
+  }
+  if (params.groqModel !== undefined) {
+    currentGroqModel = params.groqModel;
+    await db.setting.upsert({
+      where: { key: 'groq_model' },
+      create: { key: 'groq_model', value: currentGroqModel },
+      update: { value: currentGroqModel },
+    });
+  }
   healthCache = null;
 }
 
 // ============================================================================
-// AI SDK provider — OpenAI-compatible, points at Ollama
+// AI SDK providers — Ollama (local) и Groq (cloud)
 // ============================================================================
-//
-// Ollama exposes /v1/chat/completions (OpenAI compat) and /v1/embeddings.
 
 let provider: ReturnType<typeof createOpenAICompatible> | null = null;
 let providerBaseUrl = '';
 
-async function getProvider() {
+let groqProvider: ReturnType<typeof createOpenAICompatible> | null = null;
+
+async function getOllamaProvider() {
   await loadSettings();
   if (provider && providerBaseUrl === currentBaseUrl) return provider;
   provider = createOpenAICompatible({
     name: 'ollama',
     baseURL: `${currentBaseUrl}/v1`,
-    apiKey: 'ollama', // Ollama doesn't need a key, but AI SDK requires the field
+    apiKey: 'ollama',
   });
   providerBaseUrl = currentBaseUrl;
   return provider;
 }
 
+async function getGroqProvider() {
+  await loadSettings();
+  if (groqProvider) return groqProvider;
+  if (!currentGroqApiKey) {
+    throw new Error('Groq API key не задан. Открой Настройки → Модель → Groq и введи ключ.');
+  }
+  groqProvider = createOpenAICompatible({
+    name: 'groq',
+    baseURL: GROQ_BASE_URL,
+    apiKey: currentGroqApiKey,
+  });
+  return groqProvider;
+}
+
 /**
  * Returns the model object for use with AI SDK's streamText/generateText.
  *
- * If the configured model is not available in Ollama, falls back to the
- * first available model and warns the user.
+ * Если provider='groq' — возвращает Groq модель (быстрый cloud inference).
+ * Если provider='ollama' — возвращает Ollama модель (local, с health check + fallback).
  */
 export async function getChatModel() {
-  const p = await getProvider();
+  await loadSettings();
 
-  // Check if the configured model exists in Ollama
+  // ── Groq provider ──
+  if (currentProvider === 'groq') {
+    const p = await getGroqProvider();
+    logger.debug('llm', `Using Groq model: ${currentGroqModel}`);
+    return p.chatModel(currentGroqModel);
+  }
+
+  // ── Ollama provider (default) ──
+  const p = await getOllamaProvider();
   const health = await checkOllamaHealth();
   if (health.ok && health.models.length > 0) {
     const exactMatch = health.models.find(m => m === currentModel);
     if (exactMatch) {
-      logger.debug('ollama', `Using configured model: ${currentModel}`);
+      logger.debug('llm', `Using configured model: ${currentModel}`);
       return p.chatModel(currentModel);
     }
-
-    // Try partial match (qwen2.5:7b matches qwen2.5:7b-instruct-q5_K_M etc.)
     const partialMatch = health.models.find(m =>
       m.startsWith(currentModel.split(':')[0]) ||
       m.startsWith(currentModel) ||
       currentModel.startsWith(m.split(':')[0])
     );
-
     if (partialMatch) {
-      logger.warn('ollama', `Model not found, using partial match`, {
+      logger.warn('llm', `Model not found, using partial match`, {
         requested: currentModel,
         using: partialMatch,
       });
       return p.chatModel(partialMatch);
     }
-
-    // Fall back to first available
     const fallback = health.models[0];
-    logger.warn('ollama', `Model not found, using first available`, {
+    logger.warn('llm', `Model not found, using first available`, {
       requested: currentModel,
       using: fallback,
       allModels: health.models.slice(0, 5),
@@ -200,9 +281,16 @@ export async function getChatModel() {
     return p.chatModel(fallback);
   }
 
-  // Health check failed — try the configured model anyway (will likely 404)
-  logger.warn('ollama', `Health check failed — using configured model anyway (will likely 404)`, { model: currentModel });
+  logger.warn('llm', `Health check failed — using configured model anyway (will likely 404)`, { model: currentModel });
   return p.chatModel(currentModel);
+}
+
+/**
+ * Возвращает имя текущей модели (для логирования и NO_TOOL_MODELS check).
+ */
+export async function getModelName(): Promise<string> {
+  await loadSettings();
+  return currentProvider === 'groq' ? currentGroqModel : currentModel;
 }
 
 // ============================================================================

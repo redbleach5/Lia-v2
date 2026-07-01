@@ -24,7 +24,7 @@ import 'server-only';
 import { pino, stdSerializers, type Logger as PinoLogger } from 'pino';
 
 type LogLevel = 'trace' | 'debug' | 'info' | 'warn' | 'error';
-type Category = 'chat' | 'agent' | 'ollama' | 'tools' | 'memory' | 'db' | 'vrm' | 'api' | 'rl' | 'system';
+type Category = 'chat' | 'agent' | 'ollama' | 'llm' | 'tools' | 'memory' | 'db' | 'vrm' | 'api' | 'rl' | 'system';
 
 type LogContext = Record<string, unknown>;
 

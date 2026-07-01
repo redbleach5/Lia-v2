@@ -109,6 +109,10 @@ export const updateSettingsSchema = z.object({
   avatarMode: z.enum(['live2d', '3d']).optional(),
   activeVrm: z.string().nullable().optional(),
   avatarConfig: z.record(z.string(), z.unknown()).optional(),
+  // Groq settings (Phase: Groq support)
+  provider: z.enum(['ollama', 'groq']).optional(),
+  groqApiKey: z.string().optional(),
+  groqModel: z.string().optional(),
 });
 
 // POST /api/rl/train

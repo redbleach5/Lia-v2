@@ -18,7 +18,7 @@ import 'server-only';
 // в pending, runner при следующем /start пропускает PLAN и продолжает с steps.length.
 
 import { streamText, isStepCount, type ModelMessage, type ToolSet } from 'ai';
-import { getChatModel, checkOllamaHealth } from '@/lib/ollama';
+import { getChatModel, checkOllamaHealth, getModelName } from '@/lib/ollama';
 import { db } from '@/lib/db';
 import { z } from 'zod';
 import { logger } from '@/lib/logger';
@@ -796,7 +796,7 @@ async function executeStep(
   let fullText = '';
   const toolCalls: Array<{ name: string; input: unknown; output: unknown; success: boolean }> = [];
 
-  const modelName = (model as unknown as { modelId?: string }).modelId ?? '';
+  const modelName = await getModelName();
   const knownBadToolModels = ['gemma3:4b', 'gemma3:1b', 'phi3', 'tinyllama'];
   const tryWithTools = !knownBadToolModels.some(m => modelName.includes(m));
 

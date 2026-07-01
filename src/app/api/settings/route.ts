@@ -2,7 +2,7 @@
 // POST /api/settings — update Ollama settings + avatar config
 
 import { NextRequest, NextResponse } from 'next/server';
-import { getOllamaSettings, setOllamaSettings, checkOllamaHealth, reloadSettings } from '@/lib/ollama';
+import { getOllamaSettings, setOllamaSettings, checkOllamaHealth, reloadSettings, GROQ_MODELS } from '@/lib/ollama';
 import { db } from '@/lib/db';
 import { PATHS } from '@/lib/paths';
 import { existsSync, readdirSync } from 'fs';
@@ -63,6 +63,7 @@ export async function GET() {
       m.startsWith('bge-') ||
       m.startsWith('e5-')
     ),
+    groqModels: GROQ_MODELS,
     vrmFiles,
     activeVrm,
     avatarMode,
@@ -77,6 +78,7 @@ export async function POST(req: NextRequest) {
     const body = parsed.data;
 
     const ollamaChanged = body.baseUrl !== undefined || body.model !== undefined || body.embedModel !== undefined;
+    const providerChanged = body.provider !== undefined || body.groqApiKey !== undefined || body.groqModel !== undefined;
 
     // Ollama settings
     if (body.baseUrl !== undefined) {
@@ -87,6 +89,17 @@ export async function POST(req: NextRequest) {
     }
     if (body.embedModel !== undefined) {
       await setOllamaSettings({ embedModel: body.embedModel });
+    }
+
+    // Groq / provider settings
+    if (body.provider !== undefined) {
+      await setOllamaSettings({ provider: body.provider });
+    }
+    if (body.groqApiKey !== undefined) {
+      await setOllamaSettings({ groqApiKey: body.groqApiKey });
+    }
+    if (body.groqModel !== undefined) {
+      await setOllamaSettings({ groqModel: body.groqModel });
     }
 
     // Avatar mode
@@ -120,9 +133,8 @@ export async function POST(req: NextRequest) {
       });
     }
 
-    // Если Ollama-настройки менялись — принудительно перечитываем и инвалидируем кэш,
-    // чтобы следующий /api/settings GET вернул актуальный health-статус.
-    if (ollamaChanged) {
+    // Если Ollama-настройки или provider менялись — перечитываем и инвалидируем кэш.
+    if (ollamaChanged || providerChanged) {
       await reloadSettings();
     }
 

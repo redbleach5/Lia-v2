@@ -16,6 +16,11 @@ export type Settings = {
   activeVrm: string | null;
   avatarMode: string;
   avatarConfig: AvatarConfig;
+  // Groq support
+  provider: 'ollama' | 'groq';
+  groqApiKey: string;  // '***set***' or ''
+  groqModel: string;
+  groqModels: Array<{ id: string; label: string; desc: string }>;
 };
 
 export type RLStats = {

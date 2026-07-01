@@ -50,10 +50,12 @@ export function SettingsDialog() {
   const [loading, setLoading] = useState(false);
 
   // Form state — общее для ModelTab и AvatarTab.
-  // Каждый tab читает и обновляет свои поля.
   const [baseUrl, setBaseUrl] = useState('');
   const [model, setModel] = useState('');
   const [embedModel, setEmbedModel] = useState('auto');
+  const [provider, setProvider] = useState<'ollama' | 'groq'>('ollama');
+  const [groqApiKey, setGroqApiKey] = useState('');
+  const [groqModel, setGroqModel] = useState('llama-3.3-70b-versatile');
   const [avatarMode, setAvatarMode] = useState<'live2d' | '3d'>('3d');
   const [activeVrm, setActiveVrm] = useState<string | null>(null);
   const [avatarConfig, setAvatarConfig] = useState<AvatarConfig>(DEFAULT_AVATAR_CONFIG);
@@ -72,6 +74,9 @@ export function SettingsDialog() {
       setBaseUrl(settingsData.baseUrl ?? '');
       setModel(settingsData.model ?? '');
       setEmbedModel(settingsData.embedModel ?? 'auto');
+      setProvider(settingsData.provider ?? 'ollama');
+      setGroqApiKey('');  // не показываем сохранённый ключ — пользователь вводит заново
+      setGroqModel(settingsData.groqModel ?? 'llama-3.3-70b-versatile');
       setAvatarMode(settingsData.avatarMode === 'live2d' ? 'live2d' : '3d');
       setActiveVrm(settingsData.activeVrm);
       setAvatarConfig(settingsData.avatarConfig
@@ -136,9 +141,15 @@ export function SettingsDialog() {
                 baseUrl={baseUrl}
                 model={model}
                 embedModel={embedModel}
+                provider={provider}
+                groqApiKey={groqApiKey}
+                groqModel={groqModel}
                 setBaseUrl={setBaseUrl}
                 setModel={setModel}
                 setEmbedModel={setEmbedModel}
+                setProvider={setProvider}
+                setGroqApiKey={setGroqApiKey}
+                setGroqModel={setGroqModel}
                 onSaved={refresh}
               />
             </TabsContent>

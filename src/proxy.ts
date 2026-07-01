@@ -21,6 +21,13 @@ export function proxy(req: NextRequest) {
   const path = req.nextUrl.pathname;
   const isDev = process.env.NODE_ENV !== 'production';
 
+  // ── Skip proxy for VRM upload ──
+  // Multipart body может быть до 50MB — proxy обрезает его на 10MB,
+  // ломая FormData parsing. Пропускаем напрямую в route handler.
+  if (path === '/api/settings/upload-vrm') {
+    return NextResponse.next();
+  }
+
   // ── Auth check ──
   // Localhost (127.0.0.1, ::1) — пропускаем без токена (local-first app).
   // `unknown` IP — НЕ localhost: если reverse proxy не передаёт X-Forwarded-For,
@@ -80,5 +87,8 @@ export function proxy(req: NextRequest) {
 export const config = {
   // Apply to all API routes EXCEPT upload-vrm (large multipart body —
   // proxy truncates it at 10MB, breaking FormData parsing)
-  matcher: ['/api/:path*', '!/api/settings/upload-vrm'],
+  // Next.js 16 matcher doesn't support negation — use has/skip instead.
+  matcher: '/api/:path*',
+  // upload-vrm обрабатывается отдельно: прокси пропускает его без body limit
+  // через проверку path в функции proxy() ниже.
 };

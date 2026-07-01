@@ -78,6 +78,7 @@ export function proxy(req: NextRequest) {
 }
 
 export const config = {
-  // Apply to all API routes
-  matcher: '/api/:path*',
+  // Apply to all API routes EXCEPT upload-vrm (large multipart body —
+  // proxy truncates it at 10MB, breaking FormData parsing)
+  matcher: ['/api/:path*', '!/api/settings/upload-vrm'],
 };

@@ -31,6 +31,12 @@ export function LearningTab({ rlStats, onRefresh }: LearningTabProps) {
       } else {
         toast.success('Движок обучения запускается… (это займёт несколько секунд)');
       }
+      // Если есть warning (например, torch не установлен) — показываем его
+      // как info-toast чтобы пользователь понимал: sidecar работает, но
+      // обучение недоступно пока не установит torch.
+      if (data.warning) {
+        toast.info(data.warning, { duration: 8000 });
+      }
       setTimeout(() => onRefresh(), 3000);
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'Не удалось запустить движок');

@@ -61,7 +61,7 @@ async function findPythonBinary(): Promise<string | null> {
   return null;
 }
 
-async function start(): Promise<{ ok: boolean; pid?: number; error?: string }> {
+async function start(): Promise<{ ok: boolean; pid?: number; error?: string; warning?: string }> {
   if (isRunning()) {
     return { ok: true, pid: g[globalKey]?.pid };
   }
@@ -90,15 +90,37 @@ async function start(): Promise<{ ok: boolean; pid?: number; error?: string }> {
     };
   }
 
-  // Check if dependencies are installed (uvicorn is the key one)
+  // Check which dependencies are installed.
+  // uvicorn + fastapi — required for sidecar to start at all.
+  // torch + onnx — required only for /train endpoint. Without them sidecar
+  // starts, /health and /stats work, but /train returns 500. This lets users
+  // see sidecar is alive and understand they need to install torch separately.
+  // (torch is ~700MB, so we don't fail start just because it's missing.)
+  const missingRequired: string[] = [];
+  const missingOptional: string[] = [];
   try {
-    execFileSync(pythonBin, ['-c', 'import uvicorn, torch, fastapi'], { stdio: 'ignore' });
+    execFileSync(pythonBin, ['-c', 'import uvicorn, fastapi'], { stdio: 'ignore' });
   } catch {
+    missingRequired.push('uvicorn', 'fastapi');
+  }
+  try {
+    execFileSync(pythonBin, ['-c', 'import torch, onnx'], { stdio: 'ignore' });
+  } catch {
+    missingOptional.push('torch', 'onnx');
+  }
+
+  if (missingRequired.length > 0) {
     return {
       ok: false,
-      error: 'Не установлены Python-зависимости. Открой терминал в папке python-sidecar и выполни: pip install -r requirements.txt',
+      error: `Не установлены обязательные Python-зависимости (${missingRequired.join(', ')}). ` +
+        'Открой терминал в папке python-sidecar и выполни: pip install -r requirements.txt',
     };
   }
+
+  const warning = missingOptional.length > 0
+    ? `Движок запущен, но обучение недоступно: не установлены ${missingOptional.join(', ')}. ` +
+      'Для обучения выполни: pip install -r requirements.txt (torch ~700MB, установка может занять несколько минут).'
+    : undefined;
 
   try {
     const proc = spawn(pythonBin, [mainPy], {
@@ -132,7 +154,7 @@ async function start(): Promise<{ ok: boolean; pid?: number; error?: string }> {
     });
 
     g[globalKey] = proc;
-    return { ok: true, pid: proc.pid };
+    return { ok: true, pid: proc.pid, warning };
   } catch (e) {
     return {
       ok: false,
@@ -166,6 +188,7 @@ export async function POST() {
       ok: true,
       pid: result.pid,
       message: 'Движок обучения запущен',
+      warning: result.warning,
     });
   } catch (e) {
     logger.error('rl', 'failed', {}, e);

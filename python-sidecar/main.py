@@ -29,8 +29,24 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from rl.db import count_transitions, load_transitions, resolve_db_path
-from rl.model import LiaPolicyNetwork, load_model
-from rl.train import TrainConfig, train, TrainResult
+
+# Lazy imports — torch/onnx могут быть не установлены.
+# Sidecar запускается без них: /health и /stats работают, /train возвращает
+# понятную ошибку. Это даёт пользователю возможность увидеть что sidecar жив,
+# и понять что для обучения нужно: pip install torch onnx onnxscript
+try:
+    from rl.model import LiaPolicyNetwork, load_model
+    from rl.train import TrainConfig, train, TrainResult
+    TORCH_AVAILABLE = True
+    TORCH_IMPORT_ERROR = None
+except ImportError as e:
+    TORCH_AVAILABLE = False
+    TORCH_IMPORT_ERROR = str(e)
+    LiaPolicyNetwork = None  # type: ignore
+    load_model = None  # type: ignore
+    TrainConfig = None  # type: ignore
+    train = None  # type: ignore
+    TrainResult = None  # type: ignore
 
 
 # ============================================================================
@@ -164,6 +180,18 @@ async def models():
 
 @app.post("/train", response_model=TrainResult)
 async def train_endpoint(req: TrainRequest):
+    # Проверяем что torch доступен. Sidecar может работать без torch
+    # (только /health и /stats), но /train требует model + training loop.
+    if not TORCH_AVAILABLE:
+        raise HTTPException(
+            status_code=500,
+            detail=(
+                f"Training unavailable — torch/onnx not installed. "
+                f"Import error: {TORCH_IMPORT_ERROR}. "
+                "Run: cd python-sidecar && pip install -r requirements.txt "
+                "(torch ~700MB, installation may take a few minutes)"
+            ),
+        )
     try:
         config = TrainConfig(
             n_epochs=req.n_epochs,
